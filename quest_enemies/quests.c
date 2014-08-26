@@ -490,13 +490,13 @@ int parse_map(map_enemy_t *en, int en_ct, int ep, int alt, int *idx, int map) {
         n_clones = en[i].num_clones;
 
         switch(en[i].base & 0xFFFF) {
-            case 0x0040:    /* Hildebear & Hildetorr */
+            case 0x0040:    /* Hildebear & Hildeblue */
                 acc = en[i].skin & 0x01;
                 bp = 0x49 + acc;
                 rt = 0x01 + acc;
 
                 if(acc)
-                    name = "Hildetorr";
+                    name = "Hildeblue";
                 else
                     name = "Hildebear";
                 break;
@@ -793,7 +793,7 @@ int parse_map(map_enemy_t *en, int en_ct, int ep, int alt, int *idx, int map) {
                 name = "Vol Opt (form 2)";
                 break;
 
-            case 0x00C8:    /* Dark Falz + 511? Helpers */
+            case 0x00C8:    /* Dark Falz (3 forms) + 510 Darvants */
                 /* 510 Darvants come first. */
                 for(j = 0; j < 510; ++j) {
                     printf("%-8d   %-11d   %-10d   %-8d   %s\n", i, k++, -1,
