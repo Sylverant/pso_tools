@@ -195,7 +195,7 @@ static void compress(void) {
 
     /* Compress it. */
     if((cmp_len = prs_compress(unc, &cmp, (size_t)unc_len)) < 0) {
-        fprintf(stderr, "compress; %s\n", strerror(-cmp_len));
+        fprintf(stderr, "compress: %s\n", strerror(-cmp_len));
         exit(EXIT_FAILURE);
     }
 
