@@ -67,7 +67,7 @@ static void parse_command_line(int argc, char *argv[]) {
         exit(EXIT_FAILURE);
     }
 
-    for(i = 1; i < argc - 1; ++i) {
+    for(i = 1; i < argc - 2; ++i) {
         if(!strcmp(argv[i], "--version")) {
             print_program_info();
             exit(EXIT_SUCCESS);
