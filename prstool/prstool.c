@@ -62,52 +62,40 @@ static void print_help(const char *bin) {
 static void parse_command_line(int argc, char *argv[]) {
     int i;
 
-    if(argc < 4) {
+    /* See if we have any of the boring options... */
+    if(argc == 2) {
+        if(!strcmp(argv[1], "--version")) {
+            print_program_info();
+            exit(EXIT_SUCCESS);
+        }
+        else if(!strcmp(argv[1], "--help")) {
+            print_help(argv[0]);
+            exit(EXIT_SUCCESS);
+        }
+    }
+
+    /* Otherwise, we need exactly 4 arguments, so bail if we have more. */
+    if(argc != 4) {
         print_help(argv[0]);
         exit(EXIT_FAILURE);
     }
 
-    for(i = 1; i < argc - 2; ++i) {
-        if(!strcmp(argv[i], "--version")) {
-            print_program_info();
-            exit(EXIT_SUCCESS);
-        }
-        else if(!strcmp(argv[i], "--help")) {
-            print_help(argv[0]);
-            exit(EXIT_SUCCESS);
-        }
-        else if(!strcmp(argv[i], "-x")) {
-            if(argc != 4) {
-                print_help(argv[0]);
-                exit(EXIT_FAILURE);
-            }
-
-            operation = 2;
-        }
-        else if(!strcmp(argv[i], "-c")) {
-            if(argc != 4) {
-                print_help(argv[0]);
-                exit(EXIT_FAILURE);
-            }
-
-            operation = 1;
-        }
-        else {
-            printf("Illegal command line argument: %s\n", argv[i]);
-            print_help(argv[0]);
-            exit(EXIT_FAILURE);
-        }
+    /* Figure out what they're asking us to do. */
+    if(!strcmp(argv[1], "-x")) {
+        operation = 2;
     }
-
-    /* Did we get something to do? */
-    if(!operation) {
+    else if(!strcmp(argv[1], "-c")) {
+        operation = 1;
+    }
+    else {
+        printf("Illegal command line argument: %s\n", argv[i]);
         print_help(argv[0]);
         exit(EXIT_FAILURE);
     }
 
     /* Save the files we'll be working with. */
-    in_file = argv[argc - 2];
-    out_file = argv[argc - 1];
+    in_file = argv[2];
+    out_file = argv[3];
 }
 
 static uint8_t *read_input(long *len) {
