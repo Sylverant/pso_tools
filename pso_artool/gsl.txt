@@ -1,0 +1,58 @@
+Quick and Dirty GSL Archive Documentation
+-----------------------------------------
+
+--------------------------------------------------------------------------------
+                                 Introduction
+--------------------------------------------------------------------------------
+
+This text file explains the format of GSL archive files, as used in Phantasy
+Star Online Episodes I & II for the Gamecube (as well as other later versions of
+PSO). I'm not sure of any other places where GSL archives are used, but if you
+know of any, I'd be interested to know.
+
+The GSL archive file format is a bit of an improvement over the AFS archive
+format used by earlier versions of PSO, but still isn't really all that great of
+an archive file format. Unlike AFS, GSL archives do store the names of the files
+that are contained in the archive. The file table at the beginning of the
+archive is of variable length, but doesn't store the number of files contained
+within the archive (although, a blank entry in the table signals the end of the
+list of files, so this isn't too much of a problem). There is no magic number at
+the beginning of the file to identify the archive as a GSL archive. Files are
+still padded to 2KiB boundaries, which is enforced by fact that offsets within
+the archive are notated in 2KiB chunks in the file table.
+
+Now that the intro is out of the way, onto the file format...
+
+--------------------------------------------------------------------------------
+                                 File Format
+--------------------------------------------------------------------------------
+
+All multi-byte numeric types used in a GSL archive dependent on what version of
+the game the archive was created for. Archives created for Gamecube versions of
+the game store multi-byte numeric types in Big Endian (PowerPC) byte order,
+whereas those made for PSO Blue Burst are in Little Endian (Intel) byte order.
+This only applies to the archive container file itself -- individual files may
+differ in their byte ordering.
+
+All GSL archives consist of a file table, and the individual files that are
+stored in the archive. There is no global file header as there is in an AFS
+archive. Files are stored after the file table, one after the other, padded to
+2KiB boundaries.
+
+File Table (variable length -- always seems to have a lot of padding, though):
+Each entry in the file table is 48 bytes long and is of the following format:
+    32 bytes - File Name
+        Stored as plain ASCII characters
+    4 bytes - Offset within the archive, in 2KiB blocks
+    4 bytes - Length of the file, in bytes
+    8 bytes - Unused? Always zeroes.
+
+There must be at least one blank entry at the end of the file table to signify
+the end of the list. In addition, like the files themselves, this area must be
+padded to a 2KiB boundary. PSO seems to have files with much larger tables here
+than would otherwise be needed.
+
+Archived Files (variable length):
+Each file follows at the positions specified in the file table above. Files are
+padded to 2KiB boundaries, as is required by the offset values in the file table
+section above.

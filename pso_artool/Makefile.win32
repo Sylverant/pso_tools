@@ -1,0 +1,15 @@
+# Windows Makefile.
+# Build with nmake from a VS command prompt:
+#    nmake /f Makefile.win32 nodebug=1
+
+!include <win32.mak>
+
+all: pso_artool.exe
+
+OBJS = artool.obj afs.obj gsl.obj windows_compat.obj
+
+.c.obj:
+  $(cc) $(cdebug) $(cflags) $(cvars) $*.c /D_CRT_SECURE_NO_WARNINGS
+
+pso_dns.exe: $(OBJS)
+  $(link) $(ldebug) $(conflags) -out:pso_dns.exe $(OBJS) $(conlibs)
