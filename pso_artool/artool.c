@@ -24,9 +24,12 @@
 /* Available archive types. */
 #define ARCHIVE_TYPE_NONE   -1
 #define ARCHIVE_TYPE_AFS    0
-#define ARCHIVE_TYPE_GSLBE  1
+#define ARCHIVE_TYPE_GSL    1
 
 #define ARCHIVE_TYPE_COUNT  2
+
+#define GSL_BIG     0
+#define GSL_LITTLE  1
 
 /* Archive manipulation functions. These should probably go in a header, but I'm
    feeling lazy at the moment. */
@@ -43,6 +46,7 @@ int create_gsl(const char *fn, const char *files[], uint32_t count);
 int add_to_gsl(const char *fn, const char *files[], uint32_t count);
 int update_gsl(const char *fn, const char *file, const char *path);
 int delete_from_gsl(const char *fn, const char *files[], uint32_t cnt);
+void gsl_set_endianness(int e);
 
 /* This looks ugly, but whatever. */
 struct {
@@ -85,8 +89,8 @@ static void print_program_info(void) {
 static void print_help(const char *bin) {
     printf("Usage:\n"
            "    %s type operation [operation aguments]\n"
-           "Where type is one of --afs or --gsl. Available operations and\n"
-           "their arguments are shown below:\n"
+           "Where type is one of --afs, --gsl, --gsl-little, or --gsl-big.\n"
+           "Available operations and their arguments are shown below:\n"
            "To list the files in an archive:\n"
            "    -t archive\n"
            "To extract an archive:\n"
@@ -107,7 +111,15 @@ static void print_help(const char *bin) {
     printf("As AFS archives do not store filenames, any files specified in an\n"
            "AFS archive are specified by index within the archive (for the -u\n"
            "and --delete operations). For other archive formats, you should\n"
-           "specify the file names within the archive for these operations.\n");
+           "specify the file names within the archive for these operations.\n"
+           "\n");
+    printf("GSL archives are supported in both big- and little-endian forms.\n"
+           "If the endianness is not specified (by way of the --gsl-big or\n"
+           "--gsl-little types), then it will be auto-detected for all\n"
+           "operations other than archive creation (big-endian is assumed if\n"
+           "endianness is not specified for archive creation). You should use\n"
+           "big-endian mode for PSOGC files and little-endian mode for any\n"
+           "other versions of the game.\n");
 }
 
 /* Parse any command-line arguments passed in. */
@@ -120,12 +132,23 @@ static void parse_command_line(int argc, const char *argv[]) {
         exit(EXIT_FAILURE);
     }
 
-    if(!strcmp(argv[1], "--afs"))
+    if(!strcmp(argv[1], "--afs")) {
         t = ARCHIVE_TYPE_AFS;
-    else if(!strcmp(argv[1], "--gsl"))
-        t = ARCHIVE_TYPE_GSLBE;
-    else
+    }
+    else if(!strcmp(argv[1], "--gsl")) {
+        t = ARCHIVE_TYPE_GSL;
+    }
+    else if(!strcmp(argv[1], "--gsl-little")) {
+        t = ARCHIVE_TYPE_GSL;
+        gsl_set_endianness(GSL_LITTLE);
+    }
+    else if(!strcmp(argv[1], "--gsl-big")) {
+        t = ARCHIVE_TYPE_GSL;
+        gsl_set_endianness(GSL_BIG);
+    }
+    else {
         i = 1;
+    }
 
     if(!strcmp(argv[i], "--version")) {
         print_program_info();

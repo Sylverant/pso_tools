@@ -3,7 +3,7 @@
 
 all: pso_artool
 
-pso_artool:
+pso_artool: artool.c afs.c gsl.c
 	$(CC) -o pso_artool artool.c afs.c gsl.c
 
 .PHONY: clean

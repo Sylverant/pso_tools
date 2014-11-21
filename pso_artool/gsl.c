@@ -33,7 +33,13 @@
 #include <libgen.h>
 #endif
 
+#define GSL_AUTO    -1
+#define GSL_BIG     0
+#define GSL_LITTLE  1
+
 static uint8_t xbuf[512];
+
+static int endianness = GSL_AUTO;
 
 struct delete_cxt {
     FILE *fp;
@@ -137,11 +143,30 @@ static int scan_gsl(const char *fn, int (*p)(FILE *fp, uint32_t i, uint32_t sz,
     char filename[33];
     int rv = 0;
     uint32_t offset, size, i;
-    long next;
+    long next, total;
 
     /* Open up the file */
     if(!(fp = open_gsl(fn)))
         return -1;
+
+    /* Figure out the length of the file. */
+    if(fseek(fp, 0, SEEK_END)) {
+        printf("Seek error: %s\n", strerror(errno));
+        fclose(fp);
+        return -1;
+    }
+
+    if((total = ftell(fp)) < 0) {
+        printf("Cannot determine length of file: %s\n", strerror(errno));
+        fclose(fp);
+        return -1;
+    }
+
+    if(fseek(fp, 0, SEEK_SET)) {
+        printf("Seek error: %s\n", strerror(errno));
+        fclose(fp);
+        return -1;
+    }
 
     /* Read in each file in the archive, writing each one out. */
     for(i = 0; ; ++i) {
@@ -167,7 +192,33 @@ static int scan_gsl(const char *fn, int (*p)(FILE *fp, uint32_t i, uint32_t sz,
             goto out;
         }
 
-        offset = (buf[3]) | (buf[2] << 8) | (buf[1] << 16) | (buf[0] << 24);
+        /* If the user hasn't specified the endianness, then try to guess. */
+        if(endianness == GSL_AUTO) {
+            /* Guess big endian first. */
+            offset = (buf[3]) | (buf[2] << 8) | (buf[1] << 16) | (buf[0] << 24);
+            endianness = GSL_BIG;
+
+            /* If the offset of the file is outside of the archive length, the
+               we probably guessed wrong, try as little endian. */
+            if(offset > (uint32_t)total || offset * 2048 > (uint32_t)total) {
+                offset = (buf[3] << 24) | (buf[2] << 16) | (buf[1] << 8) |
+                    (buf[0]);
+                endianness = GSL_LITTLE;
+
+                if(offset * 2048 > (uint32_t)total) {
+                    printf("GSL file looks corrupt. Cowardly refusing to even "
+                           "attempt further operation.\n");
+                    rv = -9;
+                    goto out;
+                }
+            }
+        }
+        else if(endianness == GSL_BIG) {
+            offset = (buf[3]) | (buf[2] << 8) | (buf[1] << 16) | (buf[0] << 24);
+        }
+        else {
+            offset = (buf[3] << 24) | (buf[2] << 16) | (buf[1] << 8) | (buf[0]);
+        }
 
         /* Figure out the size of the next file. */
         if(fread(buf, 1, 4, fp) != 4) {
@@ -176,7 +227,12 @@ static int scan_gsl(const char *fn, int (*p)(FILE *fp, uint32_t i, uint32_t sz,
             goto out;
         }
 
-        size = (buf[3]) | (buf[2] << 8) | (buf[1] << 16) | (buf[0] << 24);
+        if(endianness == GSL_BIG) {
+            size = (buf[3]) | (buf[2] << 8) | (buf[1] << 16) | (buf[0] << 24);
+        }
+        else {
+            size = (buf[3] << 24) | (buf[2] << 16) | (buf[1] << 8) | (buf[0]);
+        }
 
         /* Seek over the blank padding space. */
         if(fseek(fp, 8, SEEK_CUR)) {
@@ -290,14 +346,27 @@ static int add_files_to_gsl(FILE *ofp, long fpos, long wpos,
 
         /* Write the file's information into the file table. */
         wposp = wpos >> 11;
-        buf[0] = (uint8_t)(wposp >> 24);
-        buf[1] = (uint8_t)(wposp >> 16);
-        buf[2] = (uint8_t)(wposp >> 8);
-        buf[3] = (uint8_t)(wposp);
-        buf[4] = (uint8_t)(size >> 24);
-        buf[5] = (uint8_t)(size >> 16);
-        buf[6] = (uint8_t)(size >> 8);
-        buf[7] = (uint8_t)(size);
+        if(endianness == GSL_BIG) {
+            buf[0] = (uint8_t)(wposp >> 24);
+            buf[1] = (uint8_t)(wposp >> 16);
+            buf[2] = (uint8_t)(wposp >> 8);
+            buf[3] = (uint8_t)(wposp);
+            buf[4] = (uint8_t)(size >> 24);
+            buf[5] = (uint8_t)(size >> 16);
+            buf[6] = (uint8_t)(size >> 8);
+            buf[7] = (uint8_t)(size);
+        }
+        else {
+            buf[0] = (uint8_t)(wposp);
+            buf[1] = (uint8_t)(wposp >> 8);
+            buf[2] = (uint8_t)(wposp >> 16);
+            buf[3] = (uint8_t)(wposp >> 24);
+            buf[4] = (uint8_t)(size);
+            buf[5] = (uint8_t)(size >> 8);
+            buf[6] = (uint8_t)(size >> 16);
+            buf[7] = (uint8_t)(size >> 24);
+        }
+
         buf[8] = 0;
         buf[9] = 0;
         buf[10] = 0;
@@ -398,14 +467,27 @@ static int copy_file_cb(FILE *fp, uint32_t i, uint32_t sz,
     strncpy((char *)buf, fn, 32);
 
     /* Fill in the header data for the file. */
-    buf[32] = (uint8_t)(wposp >> 24);
-    buf[33] = (uint8_t)(wposp >> 16);
-    buf[34] = (uint8_t)(wposp >> 8);
-    buf[35] = (uint8_t)(wposp);
-    buf[36] = (uint8_t)(sz >> 24);
-    buf[37] = (uint8_t)(sz >> 16);
-    buf[38] = (uint8_t)(sz >> 8);
-    buf[39] = (uint8_t)(sz);
+    if(endianness == GSL_BIG) {
+        buf[32] = (uint8_t)(wposp >> 24);
+        buf[33] = (uint8_t)(wposp >> 16);
+        buf[34] = (uint8_t)(wposp >> 8);
+        buf[35] = (uint8_t)(wposp);
+        buf[36] = (uint8_t)(sz >> 24);
+        buf[37] = (uint8_t)(sz >> 16);
+        buf[38] = (uint8_t)(sz >> 8);
+        buf[39] = (uint8_t)(sz);
+    }
+    else {
+        buf[32] = (uint8_t)(wposp);
+        buf[33] = (uint8_t)(wposp >> 8);
+        buf[34] = (uint8_t)(wposp >> 16);
+        buf[35] = (uint8_t)(wposp >> 24);
+        buf[36] = (uint8_t)(sz);
+        buf[37] = (uint8_t)(sz >> 8);
+        buf[38] = (uint8_t)(sz >> 16);
+        buf[39] = (uint8_t)(sz >> 24);
+    }
+
     buf[40] = 0;
     buf[41] = 0;
     buf[42] = 0;
@@ -458,14 +540,27 @@ static int copy_filtered(FILE *fp, uint32_t i, uint32_t sz, const char *fn,
     strncpy((char *)buf, fn, 32);
 
     /* Fill in the header data for the file. */
-    buf[32] = (uint8_t)(wposp >> 24);
-    buf[33] = (uint8_t)(wposp >> 16);
-    buf[34] = (uint8_t)(wposp >> 8);
-    buf[35] = (uint8_t)(wposp);
-    buf[36] = (uint8_t)(sz >> 24);
-    buf[37] = (uint8_t)(sz >> 16);
-    buf[38] = (uint8_t)(sz >> 8);
-    buf[39] = (uint8_t)(sz);
+    if(endianness == GSL_BIG) {
+        buf[32] = (uint8_t)(wposp >> 24);
+        buf[33] = (uint8_t)(wposp >> 16);
+        buf[34] = (uint8_t)(wposp >> 8);
+        buf[35] = (uint8_t)(wposp);
+        buf[36] = (uint8_t)(sz >> 24);
+        buf[37] = (uint8_t)(sz >> 16);
+        buf[38] = (uint8_t)(sz >> 8);
+        buf[39] = (uint8_t)(sz);
+    }
+    else {
+        buf[32] = (uint8_t)(wposp);
+        buf[33] = (uint8_t)(wposp >> 8);
+        buf[34] = (uint8_t)(wposp >> 16);
+        buf[35] = (uint8_t)(wposp >> 24);
+        buf[36] = (uint8_t)(sz);
+        buf[37] = (uint8_t)(sz >> 8);
+        buf[38] = (uint8_t)(sz >> 16);
+        buf[39] = (uint8_t)(sz >> 24);
+    }
+
     buf[40] = 0;
     buf[41] = 0;
     buf[42] = 0;
@@ -529,14 +624,27 @@ static int copy_update(FILE *fp, uint32_t i, uint32_t sz, const char *fn,
     strncpy((char *)buf, fn, 32);
 
     /* Fill in the header data for the file. */
-    buf[32] = (uint8_t)(wposp >> 24);
-    buf[33] = (uint8_t)(wposp >> 16);
-    buf[34] = (uint8_t)(wposp >> 8);
-    buf[35] = (uint8_t)(wposp);
-    buf[36] = (uint8_t)(sz >> 24);
-    buf[37] = (uint8_t)(sz >> 16);
-    buf[38] = (uint8_t)(sz >> 8);
-    buf[39] = (uint8_t)(sz);
+    if(endianness == GSL_BIG) {
+        buf[32] = (uint8_t)(wposp >> 24);
+        buf[33] = (uint8_t)(wposp >> 16);
+        buf[34] = (uint8_t)(wposp >> 8);
+        buf[35] = (uint8_t)(wposp);
+        buf[36] = (uint8_t)(sz >> 24);
+        buf[37] = (uint8_t)(sz >> 16);
+        buf[38] = (uint8_t)(sz >> 8);
+        buf[39] = (uint8_t)(sz);
+    }
+    else {
+        buf[32] = (uint8_t)(wposp);
+        buf[33] = (uint8_t)(wposp >> 8);
+        buf[34] = (uint8_t)(wposp >> 16);
+        buf[35] = (uint8_t)(wposp >> 24);
+        buf[36] = (uint8_t)(sz);
+        buf[37] = (uint8_t)(sz >> 8);
+        buf[38] = (uint8_t)(sz >> 16);
+        buf[39] = (uint8_t)(sz >> 24);
+    }
+
     buf[40] = 0;
     buf[41] = 0;
     buf[42] = 0;
@@ -583,6 +691,11 @@ int create_gsl(const char *fn, const char *files[], uint32_t count) {
 #ifndef _WIN32
     mode_t mask;
 #endif
+
+    /* If the user hasn't specified the endianness of the file he or she is
+       creating, then assume big endian. */
+    if(endianness == GSL_AUTO)
+        endianness = GSL_BIG;
 
     /* Figure out the size of the header. Sega's files seem (to me) to have no
        rhyme or reason to how long the header is. I just round it up to the next
@@ -893,4 +1006,8 @@ int print_gsl_files(const char *fn) {
 
 int extract_gsl(const char *fn) {
     return scan_gsl(fn, &extract_file, (void *)fn);
+}
+
+void gsl_set_endianness(int e) {
+    endianness = e;
 }
