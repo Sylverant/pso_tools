@@ -33,6 +33,7 @@
 #ifndef _WIN32
 #include <unistd.h>
 #include <inttypes.h>
+#include <libgen.h>
 #endif
 
 static uint8_t xbuf[512];
@@ -53,6 +54,11 @@ struct update_cxt {
     long fpos;
     long wpos;
 };
+
+#ifdef _WIN32
+/* In windows_compat.c */
+char *basename(char *input);
+#endif
 
 static int digits(uint32_t n) {
     int r = 1;
@@ -322,16 +328,16 @@ static int extract_file(FILE *fp, uint32_t i, uint32_t cnt, uint32_t sz,
     size_t len = strlen(fn);
     FILE *ofp;
 #ifndef _WIN32
-    char ofn[len + 12];
+    char ofn[len + 20];
 #else
     char ofn[256];
 #endif
 
     /* Open the output file. */
 #ifndef _WIN32
-    snprintf(ofn, len + 12, "%s.%0*" PRIu32, fn, dg, i);
+    snprintf(ofn, len + 20, "%s.%0*" PRIu32 ".bin", fn, dg, i);
 #else
-    sprintf_s(ofn, 256, "%s.%0*d", fn, dg, i);
+    sprintf_s(ofn, 256, "%s.%0*d.bin", fn, dg, i);
 #endif
 
     if(!(ofp = fopen(ofn, "wb"))) {
@@ -949,5 +955,19 @@ int print_afs_files(const char *fn) {
 }
 
 int extract_afs(const char *fn) {
-    return scan_afs(fn, &extract_file, (void *)fn);
+    char *fnc, *bn;
+    int rv;
+
+    /* Figure out the basename of the file. */
+    if(!(fnc = strdup(fn)))
+        return -1;
+
+    if(!(bn = basename(fnc))) {
+        free(fnc);
+        return -2;
+    }
+
+    rv = scan_afs(fn, &extract_file, (void *)bn);
+    free(fnc);
+    return rv;
 }
