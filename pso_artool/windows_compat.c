@@ -117,7 +117,7 @@ mkstemp (char *tmpl)
       v /= 62;
       XXXXXX[5] = letters[v % 62];
 
-      fd = open (tmpl, O_RDWR | O_CREAT | O_EXCL, 0600);
+      fd = open (tmpl, O_RDWR | O_CREAT | O_EXCL | O_BINARY, 0600);
       if (fd >= 0)
     {
       errno = save_errno;
@@ -139,6 +139,16 @@ char *basename(char *input) {
 
     _splitpath(input, NULL, NULL, output, ext);
     strcat(output, ext);
+    return output;
+}
+
+/* Really? rename() won't overwrite existing files on Windows? */
+int my_rename(const char *old, const char *new) {
+    if(!MoveFileEx(old, new, MOVEFILE_REPLACE_EXISTING |
+                   MOVEFILE_WRITE_THROUGH | MOVEFILE_COPY_ALLOWED))
+        return -1;
+
+    return 0;
 }
 
 #endif

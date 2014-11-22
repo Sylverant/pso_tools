@@ -61,6 +61,8 @@ struct update_cxt {
 #ifdef _WIN32
 /* In windows_compat.c */
 char *basename(char *input);
+int my_rename(const char *old, const char *new);
+#define rename my_rename
 #endif
 
 static int copy_file(FILE *dst, FILE *src, uint32_t size) {
