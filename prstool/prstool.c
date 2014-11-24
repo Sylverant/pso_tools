@@ -21,7 +21,7 @@
 #include <stdint.h>
 #include <string.h>
 
-#include <sylverant/prs.h>
+#include "prs.h"
 
 static const char *in_file, *out_file;
 static int operation = 0;
