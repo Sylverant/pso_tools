@@ -1,0 +1,15 @@
+# Windows Makefile.
+# Build with nmake from a VS command prompt:
+#    nmake /f Makefile.win32 nodebug=1
+
+!include <win32.mak>
+
+all: bmltool.exe
+
+OBJS = bmltool.obj prs-comp.obj prs-decomp.obj windows_compat.obj
+
+.c.obj:
+  $(cc) $(cdebug) $(cflags) $(cvars) $*.c /D_CRT_SECURE_NO_WARNINGS
+
+bmltool.exe: $(OBJS)
+  $(link) $(ldebug) $(conflags) -out:bmltool.exe $(OBJS) $(conlibs)
