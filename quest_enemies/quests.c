@@ -1063,7 +1063,7 @@ int parse_map(map_enemy_t *en, int en_ct, int ep, int alt, int *idx, int map) {
 }
 
 void parse_quest_objects(const uint8_t *data, uint32_t len, uint32_t *obj_cnt,
-                         const quest_dat_hdr_t *ptrs[2][17]) {
+                         const quest_dat_hdr_t *ptrs[2][18]) {
     const quest_dat_hdr_t *hdr = (const quest_dat_hdr_t *)data;
     uint32_t ptr = 0;
     uint32_t obj_count = 0;

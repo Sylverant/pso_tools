@@ -130,7 +130,7 @@ int main(int argc, char *argv[]) {
     uint8_t *dat = NULL;
     uint32_t sz, ocnt, area;
     int alt, idx = 0, i, type = 0;
-    const quest_dat_hdr_t *ptrs[2][17] = { { 0 } };
+    const quest_dat_hdr_t *ptrs[2][18] = { { 0 } };
     const quest_dat_hdr_t *hdr;
 
     /* Parse the command line... */
@@ -154,7 +154,7 @@ int main(int argc, char *argv[]) {
     parse_quest_objects(dat, sz, &ocnt, ptrs);
     printf("Found %d objects\n", (int)ocnt);
 
-    for(i = 0; i < 17; ++i) {
+    for(i = 0; i < 18; ++i) {
         if((hdr = ptrs[1][i])) {
             /* XXXX: Ugly! */
             sz = LE32(hdr->size);
