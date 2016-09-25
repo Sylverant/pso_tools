@@ -1,12 +1,30 @@
 # *nix Makefile.
 # Should build with any standardish C99-supporting compiler.
 
-all: pso_artool
+SRCS = artool.c prs.c prsd.c afs.c gsl.c
+LIBS = -lpsoarchive
+TARGET = pso_artool
+INSTDIR ?= /usr/local
+CFLAGS ?= -Wall -Wextra -I/usr/local/include
+LDFLAGS ?= -Wall -Wextra -L/usr/local/lib
 
-pso_artool: artool.c afs.c gsl.c
-	$(CC) -o pso_artool artool.c afs.c gsl.c
+# Nothing should have to change below here...
 
-.PHONY: clean
+OBJS = $(patsubst %.c,%.o,$(SRCS))
+
+all: $(TARGET)
+
+%.o: %.c
+	$(CC) $(CFLAGS) -c $< -o $@
+
+$(TARGET): $(OBJS)
+	$(CC) $(CFLAGS) -o $@ $(OBJS) $(LDFLAGS) $(LIBS)
+
+.PHONY: clean install
 
 clean:
-	-rm -fr pso_artool *.o *.dSYM
+	-rm -fr $(TARGET) $(OBJS) *.dSYM
+
+install: $(TARGET)
+	install -d '$(INSTDIR)/bin'
+	install -m 755 $(TARGET) '$(INSTDIR)/bin'

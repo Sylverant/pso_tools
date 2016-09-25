@@ -1,7 +1,7 @@
 /*
     Sylverant PSO Tools
     PSO Archive Tool
-    Copyright (C) 2014 Lawrence Sebald
+    Copyright (C) 2014, 2016 Lawrence Sebald
 
     This program is free software: you can redistribute it and/or modify
     it under the terms of the GNU Affero General Public License version 3
@@ -16,1000 +16,592 @@
     along with this program.  If not, see <http://www.gnu.org/licenses/>.
 */
 
-/* This code extracts GSL archives and performs various other tasks on GSL
-   archive files. */
-
 #include <stdio.h>
-#include <string.h>
 #include <stdlib.h>
+#include <string.h>
 #include <errno.h>
-#include <stdint.h>
 
 #include <sys/stat.h>
 
 #ifndef _WIN32
 #include <inttypes.h>
-#include <unistd.h>
 #include <libgen.h>
+#include <unistd.h>
 #endif
 
-#define GSL_AUTO    -1
-#define GSL_BIG     0
-#define GSL_LITTLE  1
+#include <psoarchive/GSL.h>
 
-static uint8_t xbuf[512];
+static uint32_t endian = 0;
 
-static int endianness = GSL_AUTO;
+static int digits(uint32_t n) {
+    int r = 1;
+    while(n /= 10) ++r;
+    return r;
+}
 
-struct delete_cxt {
-    FILE *fp;
-    uint32_t item_count;
-    const char **items;
-    long fpos;
-    long wpos;
-    uint32_t copied_files;
-};
+static int gsl_list(const char *fn) {
+    pso_gsl_read_t *cxt;
+    pso_error_t err;
+    uint32_t cnt, i;
+    int dg;
+    ssize_t sz;
+    char afn[64];
 
-struct update_cxt {
-    FILE *fp;
-    const char *fn;
-    const char *path;
-    long fpos;
-    long wpos;
-};
+    if(!(cxt = pso_gsl_read_open(fn, endian, &err))) {
+        fprintf(stderr, "Cannot open archive %s: %s\n", fn, pso_strerror(err));
+        return EXIT_FAILURE;
+    }
 
-#ifdef _WIN32
-/* In windows_compat.c */
-char *basename(char *input);
-int my_rename(const char *old, const char *new);
-#define rename my_rename
+    /* Loop through each file... */
+    cnt = pso_gsl_file_count(cxt);
+    dg = digits(cnt);
+
+    for(i = 0; i < cnt; ++i) {
+        sz = pso_gsl_file_size(cxt, i);
+        pso_gsl_file_name(cxt, i, afn, 64);
+
+#ifndef _WIN32
+        printf("File %*" PRIu32 ": '%s' size: %" PRIu32 "\n", dg, i, afn,
+               (uint32_t)sz);
+#else
+        printf("File %*I32u: '%s' size: %I32u\n", dg, i, afn, (uint32_t)sz);
 #endif
-
-static int copy_file(FILE *dst, FILE *src, uint32_t size) {
-    /* Read in the file in 512-byte chunks, writing each one out to the
-       output file (incuding the last chunk, which may be less than 512
-       bytes in length). */
-    while(size > 512) {
-        if(fread(xbuf, 1, 512, src) != 512) {
-            printf("Error reading file: %s\n", strerror(errno));
-            return -1;
-        }
-
-        if(fwrite(xbuf, 1, 512, dst) != 512) {
-            printf("Error writing file: %s\n", strerror(errno));
-            return -2;
-        }
-
-        size -= 512;
     }
 
-    if(size) {
-        if(fread(xbuf, 1, size, src) != size) {
-            printf("Error reading file: %s\n", strerror(errno));
-            return -3;
-        }
-
-        if(fwrite(xbuf, 1, size, dst) != size) {
-            printf("Error writing file: %s\n", strerror(errno));
-            return -4;
-        }
-    }
-
+    pso_gsl_read_close(cxt);
     return 0;
 }
 
-static long pad_file(FILE *fp, int boundary) {
-    long pos = ftell(fp);
-    uint8_t tmp = 0;
+static int gsl_extract(const char *fn) {
+    pso_gsl_read_t *cxt;
+    pso_error_t err;
+    uint32_t cnt, i;
+    ssize_t sz;
+    char afn[64];
+    FILE *fp;
+    uint8_t *buf;
 
-    /* If we aren't actually padding, don't do anything. */
-    if(boundary <= 0)
-        return pos;
-
-    pos = (pos & ~(boundary - 1)) + boundary;
-
-    if(fseek(fp, pos - 1, SEEK_SET)) {
-        printf("Seek error: %s\n", strerror(errno));
-        return -1;
+    if(!(cxt = pso_gsl_read_open(fn, endian, &err))) {
+        fprintf(stderr, "Cannot open archive %s: %s\n", fn, pso_strerror(err));
+        return EXIT_FAILURE;
     }
 
-    if(fwrite(&tmp, 1, 1, fp) != 1) {
-        printf("Cannot write to archive: %s\n", strerror(errno));
-        return -1;
+    /* Loop through each file... */
+    cnt = pso_gsl_file_count(cxt);
+
+    for(i = 0; i < cnt; ++i) {
+        if((sz = pso_gsl_file_size(cxt, i)) < 0) {
+            fprintf(stderr, "Cannot extract file: %s\n", pso_strerror(sz));
+            pso_gsl_read_close(cxt);
+            return EXIT_FAILURE;
+        }
+
+        if(pso_gsl_file_name(cxt, i, afn, 64) < 0) {
+            fprintf(stderr, "Cannot extract file: %s\n", pso_strerror(sz));
+            pso_gsl_read_close(cxt);
+            return EXIT_FAILURE;
+        }
+
+        if(!(buf = malloc(sz))) {
+            perror("Cannot extract file");
+            pso_gsl_read_close(cxt);
+            return EXIT_FAILURE;
+        }
+
+        if((err = pso_gsl_file_read(cxt, i, buf, (size_t)sz)) < 0) {
+            fprintf(stderr, "Cannot extract file: %s\n", pso_strerror(sz));
+            free(buf);
+            pso_gsl_read_close(cxt);
+            return EXIT_FAILURE;
+        }
+
+        if(!(fp = fopen(afn, "wb"))) {
+            perror("Cannot extract file");
+            free(buf);
+            pso_gsl_read_close(cxt);
+            return EXIT_FAILURE;
+        }
+
+        if(fwrite(buf, 1, sz, fp) != (size_t)sz) {
+            perror("Cannot extract file");
+            fclose(fp);
+            free(buf);
+            pso_gsl_read_close(cxt);
+            return EXIT_FAILURE;
+        }
+
+        /* Clean up, we're done with this file. */
+        fclose(fp);
+        free(buf);
     }
 
-    return pos;
+    pso_gsl_read_close(cxt);
+    return 0;
 }
 
-static FILE *open_gsl(const char *fn) {
-    FILE *fp;
+static int gsl_create(const char *fn, int file_cnt, const char *files[]) {
+    pso_gsl_write_t *cxt;
+    pso_error_t err;
+    int i;
+    char *tmp, *bn;
 
-    /* Open up the file */
-    if(!(fp = fopen(fn, "rb"))) {
-        printf("Cannot open %s: %s\n", fn, strerror(errno));
-        return NULL;
+    if(!(cxt = pso_gsl_new(fn, endian, &err))) {
+        fprintf(stderr, "Cannot create archive %s: %s\n", fn,
+                pso_strerror(err));
+        return EXIT_FAILURE;
     }
 
-    /* TODO: Perhaps we should sanity check the file here a bit? Doing so is a
-       bit more difficult than with an AFS file, since there is no magic number
-       or anything like that at the top of the file. */
+    if((err = pso_gsl_write_set_ftab_size(cxt, file_cnt)) < 0) {
+        fprintf(stderr, "Cannot create archive %s: %s\n", fn,
+                pso_strerror(err));
+        pso_gsl_write_close(cxt);
+        return EXIT_FAILURE;
+    }
 
-    return fp;
+    for(i = 0; i < file_cnt; ++i) {
+        if(!(tmp = strdup(files[i]))) {
+            perror("Cannot create archive");
+            pso_gsl_write_close(cxt);
+            return EXIT_FAILURE;
+        }
+
+        /* Figure out the basename of the file... */
+        bn = basename(tmp);
+
+        /* Add the file to the archive. */
+        if((err = pso_gsl_write_add_file(cxt, bn, files[i]))) {
+            fprintf(stderr, "Cannot add file '%s' to archive: %s\n", files[i],
+                    pso_strerror(err));
+            free(tmp);
+            pso_gsl_write_close(cxt);
+            return EXIT_FAILURE;
+        }
+
+        free(tmp);
+    }
+
+    pso_gsl_write_close(cxt);
+    return 0;
 }
 
-static int scan_gsl(const char *fn, int (*p)(FILE *fp, uint32_t i, uint32_t sz,
-                                             const char *fn, void *d),
-                    void *userdata) {
-    FILE *fp;
-    uint8_t buf[4];
-    char filename[33];
-    int rv = 0;
-    uint32_t offset, size, i;
-    long next, total;
+static int gsl_append(const char *fn, int file_cnt, const char *files[]) {
+    pso_gsl_read_t *rcxt;
+    pso_gsl_write_t *wcxt;
+    pso_error_t err;
+    uint32_t cnt, i;
+    int fd, j;
+    ssize_t sz;
+    uint8_t *buf;
+    char afn[64], tmpfn[16];
+    char *bn, *tmp;
 
-    /* Open up the file */
-    if(!(fp = open_gsl(fn)))
-        return -1;
+#ifndef _WIN32
+    mode_t mask;
+#endif
 
-    /* Figure out the length of the file. */
-    if(fseek(fp, 0, SEEK_END)) {
-        printf("Seek error: %s\n", strerror(errno));
-        fclose(fp);
-        return -1;
+    /* Create a temporary file for the new archive... */
+    strcpy(tmpfn, "artoolXXXXXX");
+    if((fd = mkstemp(tmpfn)) < 0) {
+        perror("Cannot create temporary file");
+        return EXIT_FAILURE;
     }
 
-    if((total = ftell(fp)) < 0) {
-        printf("Cannot determine length of file: %s\n", strerror(errno));
-        fclose(fp);
-        return -1;
+    /* Open the source archive. */
+    if(!(rcxt = pso_gsl_read_open(fn, endian, &err))) {
+        fprintf(stderr, "Cannot open archive %s: %s\n", fn, pso_strerror(err));
+        close(fd);
+        unlink(tmpfn);
+        return EXIT_FAILURE;
     }
 
-    if(fseek(fp, 0, SEEK_SET)) {
-        printf("Seek error: %s\n", strerror(errno));
-        fclose(fp);
-        return -1;
+    /* Create a context to write to the temporary file. */
+    if(!(wcxt = pso_gsl_new_fd(fd, endian, &err))) {
+        fprintf(stderr, "Cannot create archive: %s\n", pso_strerror(err));
+        pso_gsl_read_close(rcxt);
+        close(fd);
+        unlink(tmpfn);
+        return EXIT_FAILURE;
     }
 
-    /* Read in each file in the archive, writing each one out. */
-    for(i = 0; ; ++i) {
-        /* Read the filename. */
-        if(fread(filename, 1, 32, fp) != 32) {
-            printf("Error reading file %s: %s\n", fn, strerror(errno));
-            rv = -2;
-            goto out;
+    /* Loop through each file that's already in the archive... */
+    cnt = pso_gsl_file_count(rcxt);
+
+    if((err = pso_gsl_write_set_ftab_size(wcxt, file_cnt + cnt)) < 0) {
+        fprintf(stderr, "Cannot create archive %s: %s\n", fn,
+                pso_strerror(err));
+        goto err_out;
+    }
+
+    for(i = 0; i < cnt; ++i) {
+        if((sz = pso_gsl_file_size(rcxt, i)) < 0) {
+            fprintf(stderr, "Cannot extract file: %s\n", pso_strerror(sz));
+            goto err_out;
         }
 
-        /* If we have an empty filename, we've hit the end of the list. */
-        if(filename[0] == '\0') {
-            rv = (int)i;
-            break;
+        if(pso_gsl_file_name(rcxt, i, afn, 64) < 0) {
+            fprintf(stderr, "Cannot extract file: %s\n", pso_strerror(sz));
+            goto err_out;
         }
 
-        filename[32] = '\0';
-
-        /* Figure out where the next file starts in the archive. */
-        if(fread(buf, 1, 4, fp) != 4) {
-            printf("Error reading file %s: %s\n", fn, strerror(errno));
-            rv = -3;
-            goto out;
+        if(!(buf = malloc(sz))) {
+            perror("Cannot extract file");
+            goto err_out;
         }
 
-        /* If the user hasn't specified the endianness, then try to guess. */
-        if(endianness == GSL_AUTO) {
-            /* Guess big endian first. */
-            offset = (buf[3]) | (buf[2] << 8) | (buf[1] << 16) | (buf[0] << 24);
-            endianness = GSL_BIG;
+        if((err = pso_gsl_file_read(rcxt, i, buf, (size_t)sz)) < 0) {
+            fprintf(stderr, "Cannot extract file: %s\n", pso_strerror(sz));
+            free(buf);
+            goto err_out;
+        }
 
-            /* If the offset of the file is outside of the archive length, the
-               we probably guessed wrong, try as little endian. */
-            if(offset > (uint32_t)total || offset * 2048 > (uint32_t)total) {
-                offset = (buf[3] << 24) | (buf[2] << 16) | (buf[1] << 8) |
-                    (buf[0]);
-                endianness = GSL_LITTLE;
+        if((err = pso_gsl_write_add(wcxt, afn, buf, (size_t)sz)) < 0) {
+            fprintf(stderr, "Cannot add file to archive: %s\n",
+                    pso_strerror(sz));
+            free(buf);
+            goto err_out;
+        }
 
-                if(offset * 2048 > (uint32_t)total) {
-                    printf("GSL file looks corrupt. Cowardly refusing to even "
-                           "attempt further operation.\n");
-                    rv = -9;
-                    goto out;
-                }
+        /* Clean up, we're done with this file. */
+        free(buf);
+    }
+
+    /* We're done with the old archive... */
+    pso_gsl_read_close(rcxt);
+
+    /* Loop through all the new files. */
+    for(j = 0; j < file_cnt; ++j) {
+        if(!(tmp = strdup(files[j]))) {
+            perror("Cannot add file to archive");
+            goto err_out2;
+        }
+
+        /* Figure out the basename of the file. */
+        bn = basename(tmp);
+
+        /* Add the file to the archive. */
+        if((err = pso_gsl_write_add_file(wcxt, bn, files[j]))) {
+            fprintf(stderr, "Cannot add file '%s' to archive: %s\n", files[j],
+                    pso_strerror(err));
+            free(tmp);
+            goto err_out2;
+        }
+
+        free(tmp);
+    }
+
+    /* Done writing to the temporary file, time to overwrite the archive... */
+    pso_gsl_write_close(wcxt);
+
+#ifndef _WIN32
+    mask = umask(0);
+    umask(mask);
+    fchmod(fd, (~mask) & 0666);
+#endif
+
+    rename(tmpfn, fn);
+
+    return 0;
+
+err_out:
+    pso_gsl_read_close(rcxt);
+
+err_out2:
+    pso_gsl_write_close(wcxt);
+    close(fd);
+    unlink(tmpfn);
+    return EXIT_FAILURE;
+}
+
+static int gsl_update(const char *fn, const char *oldfn, const char *newfn) {
+    pso_gsl_read_t *rcxt;
+    pso_gsl_write_t *wcxt;
+    pso_error_t err;
+    uint32_t cnt, i;
+    int fd, replace = 0;
+    ssize_t sz;
+    uint8_t *buf;
+    char afn[64], tmpfn[16];
+
+#ifndef _WIN32
+    mode_t mask;
+#endif
+
+    /* Create a temporary file for the new archive... */
+    strcpy(tmpfn, "artoolXXXXXX");
+    if((fd = mkstemp(tmpfn)) < 0) {
+        perror("Cannot create temporary file");
+        return EXIT_FAILURE;
+    }
+
+    /* Open the source archive. */
+    if(!(rcxt = pso_gsl_read_open(fn, endian, &err))) {
+        fprintf(stderr, "Cannot open archive %s: %s\n", fn, pso_strerror(err));
+        close(fd);
+        unlink(tmpfn);
+        return EXIT_FAILURE;
+    }
+
+    /* Create a context to write to the temporary file. */
+    if(!(wcxt = pso_gsl_new_fd(fd, endian, &err))) {
+        fprintf(stderr, "Cannot create archive: %s\n", pso_strerror(err));
+        pso_gsl_read_close(rcxt);
+        close(fd);
+        unlink(tmpfn);
+        return EXIT_FAILURE;
+    }
+
+    /* Loop through each file that's already in the archive... */
+    cnt = pso_gsl_file_count(rcxt);
+
+    if((err = pso_gsl_write_set_ftab_size(wcxt, cnt)) < 0) {
+        fprintf(stderr, "Cannot create archive %s: %s\n", fn,
+                pso_strerror(err));
+        goto err_out;
+    }
+
+    for(i = 0; i < cnt; ++i) {
+        if(pso_gsl_file_name(rcxt, i, afn, 64) < 0) {
+            fprintf(stderr, "Cannot extract file: %s\n", pso_strerror(sz));
+            goto err_out;
+        }
+
+        /* See if this file is the one we're updating... */
+        if(!replace) {
+            if(!strcmp(afn, oldfn))
+                replace = 1;
+        }
+
+        /* Was this the one to replace? */
+        if(replace == 1) {
+            if((err = pso_gsl_write_add_file(wcxt, afn, newfn))) {
+                fprintf(stderr, "Cannot add file to archive: %s\n",
+                        pso_strerror(sz));
+                goto err_out;
+            }
+
+            replace = 2;
+            continue;
+        }
+
+        if((sz = pso_gsl_file_size(rcxt, i)) < 0) {
+            fprintf(stderr, "Cannot extract file: %s\n", pso_strerror(sz));
+            goto err_out;
+        }
+
+        if(!(buf = malloc(sz))) {
+            perror("Cannot extract file");
+            goto err_out;
+        }
+
+        if((err = pso_gsl_file_read(rcxt, i, buf, (size_t)sz)) < 0) {
+            fprintf(stderr, "Cannot extract file: %s\n", pso_strerror(sz));
+            free(buf);
+            goto err_out;
+        }
+
+        if((err = pso_gsl_write_add(wcxt, afn, buf, (size_t)sz)) < 0) {
+            fprintf(stderr, "Cannot add file to archive: %s\n",
+                    pso_strerror(sz));
+            free(buf);
+            goto err_out;
+        }
+
+        /* Clean up, we're done with this file. */
+        free(buf);
+    }
+
+    /* We're done with both of the archives... */
+    pso_gsl_read_close(rcxt);
+    pso_gsl_write_close(wcxt);
+
+#ifndef _WIN32
+    mask = umask(0);
+    umask(mask);
+    fchmod(fd, (~mask) & 0666);
+#endif
+
+    rename(tmpfn, fn);
+
+    return 0;
+
+err_out:
+    pso_gsl_read_close(rcxt);
+    pso_gsl_write_close(wcxt);
+    close(fd);
+    unlink(tmpfn);
+    return EXIT_FAILURE;
+}
+
+static int gsl_delete(const char *fn, int file_cnt, const char *files[]) {
+    pso_gsl_read_t *rcxt;
+    pso_gsl_write_t *wcxt;
+    pso_error_t err;
+    uint32_t cnt, i;
+    int fd, j, skip = 0;
+    ssize_t sz;
+    uint8_t *buf;
+    char afn[64], tmpfn[16];
+
+#ifndef _WIN32
+    mode_t mask;
+#endif
+
+    /* Create a temporary file for the new archive... */
+    strcpy(tmpfn, "artoolXXXXXX");
+    if((fd = mkstemp(tmpfn)) < 0) {
+        perror("Cannot create temporary file");
+        return EXIT_FAILURE;
+    }
+
+    /* Open the source archive. */
+    if(!(rcxt = pso_gsl_read_open(fn, endian, &err))) {
+        fprintf(stderr, "Cannot open archive %s: %s\n", fn, pso_strerror(err));
+        close(fd);
+        unlink(tmpfn);
+        return EXIT_FAILURE;
+    }
+
+    /* Create a context to write to the temporary file. */
+    if(!(wcxt = pso_gsl_new_fd(fd, endian, &err))) {
+        fprintf(stderr, "Cannot create archive: %s\n", pso_strerror(err));
+        pso_gsl_read_close(rcxt);
+        close(fd);
+        unlink(tmpfn);
+        return EXIT_FAILURE;
+    }
+
+    /* Loop through each file that's already in the archive... */
+    cnt = pso_gsl_file_count(rcxt);
+
+    /* Play it safe here, in case we don't actually end up deleting anything. */
+    if((err = pso_gsl_write_set_ftab_size(wcxt, cnt)) < 0) {
+        fprintf(stderr, "Cannot create archive %s: %s\n", fn,
+                pso_strerror(err));
+        goto err_out;
+    }
+
+    for(i = 0; i < cnt; ++i) {
+        if(pso_gsl_file_name(rcxt, i, afn, 64) < 0) {
+            fprintf(stderr, "Cannot extract file: %s\n", pso_strerror(sz));
+            goto err_out;
+        }
+
+        /* See if this file is in the list to delete. */
+        for(j = 0; j < file_cnt; ++j) {
+            if(!strcmp(afn, files[j])) {
+                skip = 1;
+                break;
             }
         }
-        else if(endianness == GSL_BIG) {
-            offset = (buf[3]) | (buf[2] << 8) | (buf[1] << 16) | (buf[0] << 24);
-        }
-        else {
-            offset = (buf[3] << 24) | (buf[2] << 16) | (buf[1] << 8) | (buf[0]);
+
+        if(skip)
+            continue;
+
+        if((sz = pso_gsl_file_size(rcxt, i)) < 0) {
+            fprintf(stderr, "Cannot extract file: %s\n", pso_strerror(sz));
+            goto err_out;
         }
 
-        /* Figure out the size of the next file. */
-        if(fread(buf, 1, 4, fp) != 4) {
-            printf("Error reading file5 %s: %s\n", fn, strerror(errno));
-            rv = -4;
-            goto out;
+        if(!(buf = malloc(sz))) {
+            perror("Cannot extract file");
+            goto err_out;
         }
 
-        if(endianness == GSL_BIG) {
-            size = (buf[3]) | (buf[2] << 8) | (buf[1] << 16) | (buf[0] << 24);
-        }
-        else {
-            size = (buf[3] << 24) | (buf[2] << 16) | (buf[1] << 8) | (buf[0]);
-        }
-
-        /* Seek over the blank padding space. */
-        if(fseek(fp, 8, SEEK_CUR)) {
-            printf("Seek error: %s\n", strerror(errno));
-            rv = -5;
-            goto out;
+        if((err = pso_gsl_file_read(rcxt, i, buf, (size_t)sz)) < 0) {
+            fprintf(stderr, "Cannot extract file: %s\n", pso_strerror(sz));
+            free(buf);
+            goto err_out;
         }
 
-        next = ftell(fp);
-
-        if(fseek(fp, (long)offset * 2048, SEEK_SET)) {
-            printf("Seek error: %s\n", strerror(errno));
-            rv = -6;
-            goto out;
+        if((err = pso_gsl_write_add(wcxt, afn, buf, (size_t)sz)) < 0) {
+            fprintf(stderr, "Cannot add file to archive: %s\n",
+                    pso_strerror(sz));
+            free(buf);
+            goto err_out;
         }
 
-        /* Call the callback function. */
-        if(p && p(fp, i, size, filename, userdata)) {
-            rv = -7;
-            goto out;
-        }
-
-        /* Move back to the file table to go onto the next file. */
-        if(fseek(fp, next, SEEK_SET)) {
-            printf("Seek error: %s\n", strerror(errno));
-            rv = -8;
-            goto out;
-        }
+        /* Clean up, we're done with this file. */
+        free(buf);
     }
 
-out:
-    fclose(fp);
-    return rv;
+    /* We're done with both of the archives... */
+    pso_gsl_read_close(rcxt);
+    pso_gsl_write_close(wcxt);
+
+#ifndef _WIN32
+    mask = umask(0);
+    umask(mask);
+    fchmod(fd, (~mask) & 0666);
+#endif
+
+    rename(tmpfn, fn);
+
+    return 0;
+
+err_out:
+    pso_gsl_read_close(rcxt);
+    pso_gsl_write_close(wcxt);
+    close(fd);
+    unlink(tmpfn);
+    return EXIT_FAILURE;
 }
 
-static int add_files_to_gsl(FILE *ofp, long fpos, long wpos,
-                            const char *files[], uint32_t count,
-                            long *rfpos, long *rwpos) {
-    uint32_t i;
-    FILE *ifp;
-    uint32_t size;
-    uint8_t buf[32];
-    char *tmp, *filename;
-    size_t fnlen;
-    long wposp;
+int gsl(int argc, const char *argv[]) {
+    if(argc < 4)
+        return -1;
 
-    /* Scan through each entry, writing the file to the archive. */
-    for(i = 0; i < count; ++i) {
-        /* Open the input file. */
-        if(!(ifp = fopen(files[i], "rb"))) {
-            printf("Cannot open file '%s': %s\n", files[i], strerror(errno));
+    /* Which style of GSL archive are we making? */
+    if(!strcmp(argv[1], "--gsl-little")) {
+        /* Little endian. */
+        endian = PSO_GSL_LITTLE_ENDIAN;
+    }
+    else if(!strcmp(argv[1], "--gsl-big")) {
+        /* Big endian. */
+        endian = PSO_GSL_BIG_ENDIAN;
+    }
+
+    if(!strcmp(argv[2], "-t")) {
+        /* List archive. */
+        if(argc != 4)
             return -1;
-        }
 
-        /* Figure out its size. */
-        if(fseek(ifp, 0, SEEK_END)) {
-            printf("Seek error: %s\n", strerror(errno));
-            fclose(ifp);
-            return -2;
-        }
+        return gsl_list(argv[3]);
+    }
+    else if(!strcmp(argv[2], "-x")) {
+        /* Extract. */
+        if(argc != 4)
+            return -1;
 
-        size = (uint32_t)ftell(ifp);
+        return gsl_extract(argv[3]);
+    }
+    else if(!strcmp(argv[2], "-c")) {
+        /* Create archive. */
+        if(argc < 5)
+            return -1;
 
-        if(fseek(ifp, 0, SEEK_SET)) {
-            printf("Seek error: %s\n", strerror(errno));
-            fclose(ifp);
-            return -3;
-        }
+        return gsl_create(argv[3], argc - 4, argv + 4);
+    }
+    else if(!strcmp(argv[2], "-r")) {
+        /* Append file(s). */
+        if(argc < 5)
+            return -1;
 
-        /* Get the filename from the path. */
-        if(!(tmp = strdup(files[i]))) {
-            printf("Cannot copy filename string: %s\n", strerror(errno));
-            fclose(ifp);
-            return -9;
-        }
+        return gsl_append(argv[3], argc - 4, argv + 4);
+    }
+    else if(!strcmp(argv[2], "-u")) {
+        /* Update archived file. */
+        if(argc != 6)
+            return -1;
 
-        if(!(filename = basename(tmp))) {
-            printf("Cannot find basename of path: %s\n", strerror(errno));
-            free(tmp);
-            fclose(ifp);
-            return -10;
-        }
+        return gsl_update(argv[3], argv[4], argv[5]);
+    }
+    else if(!strcmp(argv[2], "--delete")) {
+        /* Delete file from archive. */
+        if(argc < 5)
+            return -1;
 
-        if((fnlen = strlen(filename)) >= 32) {
-            printf("File name \"%s\" too long (must be 31 or less chars)\n",
-                   filename);
-            free(tmp);
-            fclose(ifp);
-            return -11;
-        }
-
-        /* Write the filename to the file. */
-        if(fwrite(filename, 1, fnlen, ofp) != fnlen) {
-            printf("Cannot write to archive: %s\n", strerror(errno));
-            free(tmp);
-            fclose(ifp);
-            return -11;
-        }
-
-        memset(buf, 0, 32);
-
-        if(fwrite(buf, 1, 32 - fnlen, ofp) != 32 - fnlen) {
-            printf("Cannot write to archive: %s\n", strerror(errno));
-            free(tmp);
-            fclose(ifp);
-            return -12;
-        }
-
-        /* Free the copied filename. */
-        free(tmp);
-
-        /* Write the file's information into the file table. */
-        wposp = wpos >> 11;
-        if(endianness == GSL_BIG) {
-            buf[0] = (uint8_t)(wposp >> 24);
-            buf[1] = (uint8_t)(wposp >> 16);
-            buf[2] = (uint8_t)(wposp >> 8);
-            buf[3] = (uint8_t)(wposp);
-            buf[4] = (uint8_t)(size >> 24);
-            buf[5] = (uint8_t)(size >> 16);
-            buf[6] = (uint8_t)(size >> 8);
-            buf[7] = (uint8_t)(size);
-        }
-        else {
-            buf[0] = (uint8_t)(wposp);
-            buf[1] = (uint8_t)(wposp >> 8);
-            buf[2] = (uint8_t)(wposp >> 16);
-            buf[3] = (uint8_t)(wposp >> 24);
-            buf[4] = (uint8_t)(size);
-            buf[5] = (uint8_t)(size >> 8);
-            buf[6] = (uint8_t)(size >> 16);
-            buf[7] = (uint8_t)(size >> 24);
-        }
-
-        buf[8] = 0;
-        buf[9] = 0;
-        buf[10] = 0;
-        buf[11] = 0;
-        buf[12] = 0;
-        buf[13] = 0;
-        buf[14] = 0;
-        buf[15] = 0;
-
-        if(fwrite(buf, 1, 16, ofp) != 16) {
-            printf("Cannot write to archive: %s\n", strerror(errno));
-            fclose(ifp);
-            return -4;
-        }
-
-        fpos = ftell(ofp);
-
-        /* Write the file itself to the archive. */
-        if(fseek(ofp, wpos, SEEK_SET)) {
-            printf("Seek error: %s\n", strerror(errno));
-            fclose(ifp);
-            return -5;
-        }
-
-        if(copy_file(ofp, ifp, size)) {
-            fclose(ifp);
-            return -6;
-        }
-
-        /* Add padding, as needed. */
-        if((wpos = pad_file(ofp, 2048)) == -1) {
-            fclose(ifp);
-            return -7;
-        }
-
-        /* Rewind back to the file table for the next entry. */
-        if(fseek(ofp, fpos, SEEK_SET)) {
-            printf("Seek error: %s\n", strerror(errno));
-            fclose(ifp);
-            return -8;
-        }
-
-        /* Close the input file. */
-        fclose(ifp);
+        return gsl_delete(argv[3], argc - 4, argv + 4);
     }
 
-    if(rfpos)
-        *rfpos = fpos;
-
-    if(rwpos)
-        *rwpos = wpos;
-
-    return 0;
-}
-
-static int print_file_info(FILE *fp, uint32_t i, uint32_t sz, const char *fn,
-                           void *d) {
-    uint32_t offset = (uint32_t)ftell(fp);
-
-#ifndef _WIN32
-    printf("File %4" PRIu32 " '%s' @ offset %#010" PRIx32 " size: %" PRIu32
-           "\n", i, fn, offset, sz);
-#else
-    printf("File %4d '%s' @ offset %#010x size %d\n", i, fn, offset, sz);
-#endif
-    return 0;
-}
-
-static int extract_file(FILE *fp, uint32_t i, uint32_t sz, const char *fn,
-                        void *d) {
-    FILE *ofp;
-
-    /* Open the output file. */
-    if(!(ofp = fopen(fn, "wb"))) {
-        printf("Cannot open file '%s' for write: %s\n", fn, strerror(errno));
-        return -1;
-    }
-
-    /* Copy the data out into its new file. */
-    if(copy_file(ofp, fp, sz)) {
-        fclose(ofp);
-        return -2;
-    }
-
-    /* We're done with this file, return to the scan function. */
-    fclose(ofp);
-    return 0;
-}
-
-static int copy_file_cb(FILE *fp, uint32_t i, uint32_t sz,
-                        const char *fn, void *d) {
-    FILE *ofp = (FILE *)d;
-    long fpos = (uint32_t)(i * 48);
-    uint32_t wpos = (uint32_t)ftell(ofp), wposp = wpos >> 11;
-    uint8_t buf[48];
-
-    /* Copy the filename, filling in zero bytes as needed. */
-    strncpy((char *)buf, fn, 32);
-
-    /* Fill in the header data for the file. */
-    if(endianness == GSL_BIG) {
-        buf[32] = (uint8_t)(wposp >> 24);
-        buf[33] = (uint8_t)(wposp >> 16);
-        buf[34] = (uint8_t)(wposp >> 8);
-        buf[35] = (uint8_t)(wposp);
-        buf[36] = (uint8_t)(sz >> 24);
-        buf[37] = (uint8_t)(sz >> 16);
-        buf[38] = (uint8_t)(sz >> 8);
-        buf[39] = (uint8_t)(sz);
-    }
-    else {
-        buf[32] = (uint8_t)(wposp);
-        buf[33] = (uint8_t)(wposp >> 8);
-        buf[34] = (uint8_t)(wposp >> 16);
-        buf[35] = (uint8_t)(wposp >> 24);
-        buf[36] = (uint8_t)(sz);
-        buf[37] = (uint8_t)(sz >> 8);
-        buf[38] = (uint8_t)(sz >> 16);
-        buf[39] = (uint8_t)(sz >> 24);
-    }
-
-    buf[40] = 0;
-    buf[41] = 0;
-    buf[42] = 0;
-    buf[43] = 0;
-    buf[44] = 0;
-    buf[45] = 0;
-    buf[46] = 0;
-    buf[47] = 0;
-
-    if(fseek(ofp, fpos, SEEK_SET)) {
-        printf("Seek error: %s\n", strerror(errno));
-        return -1;
-    }
-
-    if(fwrite(buf, 1, 48, ofp) != 48) {
-        printf("Cannot write to file: %s\n", strerror(errno));
-        return -2;
-    }
-
-    if(fseek(ofp, wpos, SEEK_SET)) {
-        printf("Seek error: %s\n", strerror(errno));
-        return -3;
-    }
-
-    /* Copy the file over from the old archive to the new one. */
-    if(copy_file(ofp, fp, sz))
-        return -4;
-
-    /* Add padding, as needed. */
-    if(pad_file(ofp, 2048) < 0)
-        return -5;
-
-    return 0;
-}
-
-static int copy_filtered(FILE *fp, uint32_t i, uint32_t sz, const char *fn,
-                         void *d) {
-    struct delete_cxt *cxt = (struct delete_cxt *)d;
-    uint32_t j;
-    uint32_t wposp = cxt->wpos >> 11;
-    uint8_t buf[48];
-
-    /* Look if we're supposed to leave this one off. */
-    for(j = 0; j < cxt->item_count; ++j) {
-        if(!strcmp(cxt->items[j], fn))
-            return 0;
-    }
-
-    /* Copy the filename, filling in zero bytes as needed. */
-    strncpy((char *)buf, fn, 32);
-
-    /* Fill in the header data for the file. */
-    if(endianness == GSL_BIG) {
-        buf[32] = (uint8_t)(wposp >> 24);
-        buf[33] = (uint8_t)(wposp >> 16);
-        buf[34] = (uint8_t)(wposp >> 8);
-        buf[35] = (uint8_t)(wposp);
-        buf[36] = (uint8_t)(sz >> 24);
-        buf[37] = (uint8_t)(sz >> 16);
-        buf[38] = (uint8_t)(sz >> 8);
-        buf[39] = (uint8_t)(sz);
-    }
-    else {
-        buf[32] = (uint8_t)(wposp);
-        buf[33] = (uint8_t)(wposp >> 8);
-        buf[34] = (uint8_t)(wposp >> 16);
-        buf[35] = (uint8_t)(wposp >> 24);
-        buf[36] = (uint8_t)(sz);
-        buf[37] = (uint8_t)(sz >> 8);
-        buf[38] = (uint8_t)(sz >> 16);
-        buf[39] = (uint8_t)(sz >> 24);
-    }
-
-    buf[40] = 0;
-    buf[41] = 0;
-    buf[42] = 0;
-    buf[43] = 0;
-    buf[44] = 0;
-    buf[45] = 0;
-    buf[46] = 0;
-    buf[47] = 0;
-
-    if(fseek(cxt->fp, cxt->fpos, SEEK_SET)) {
-        printf("Seek error: %s\n", strerror(errno));
-        return -1;
-    }
-
-    if(fwrite(buf, 1, 48, cxt->fp) != 48) {
-        printf("Cannot write to file: %s\n", strerror(errno));
-        return -2;
-    }
-
-    cxt->fpos += 48;
-
-    if(fseek(cxt->fp, cxt->wpos, SEEK_SET)) {
-        printf("Seek error: %s\n", strerror(errno));
-        return -3;
-    }
-
-    /* Copy the file over from the old archive to the new one. */
-    if(copy_file(cxt->fp, fp, sz))
-        return -4;
-
-    /* Add padding, as needed. */
-    if((cxt->wpos = pad_file(cxt->fp, 2048)) < 0)
-        return -5;
-
-    ++cxt->copied_files;
-
-    return 0;
-}
-
-static int copy_update(FILE *fp, uint32_t i, uint32_t sz, const char *fn,
-                       void *d) {
-    struct update_cxt *cxt = (struct update_cxt *)d;
-    uint8_t buf[48];
-    uint32_t wposp = cxt->wpos >> 11;
-
-    /* Look if we're supposed to update this one. */
-    if(!strcmp(cxt->fn, fn)) {
-        if(fseek(cxt->fp, cxt->fpos, SEEK_SET)) {
-            printf("Seek error: %s\n", strerror(errno));
-            return -7;
-        }
-
-        if(add_files_to_gsl(cxt->fp, cxt->fpos, cxt->wpos, &cxt->path, 1,
-                            &cxt->fpos, &cxt->wpos))
-            return -6;
-
-        return 0;
-    }
-
-    /* Copy the filename, filling in zero bytes as needed. */
-    strncpy((char *)buf, fn, 32);
-
-    /* Fill in the header data for the file. */
-    if(endianness == GSL_BIG) {
-        buf[32] = (uint8_t)(wposp >> 24);
-        buf[33] = (uint8_t)(wposp >> 16);
-        buf[34] = (uint8_t)(wposp >> 8);
-        buf[35] = (uint8_t)(wposp);
-        buf[36] = (uint8_t)(sz >> 24);
-        buf[37] = (uint8_t)(sz >> 16);
-        buf[38] = (uint8_t)(sz >> 8);
-        buf[39] = (uint8_t)(sz);
-    }
-    else {
-        buf[32] = (uint8_t)(wposp);
-        buf[33] = (uint8_t)(wposp >> 8);
-        buf[34] = (uint8_t)(wposp >> 16);
-        buf[35] = (uint8_t)(wposp >> 24);
-        buf[36] = (uint8_t)(sz);
-        buf[37] = (uint8_t)(sz >> 8);
-        buf[38] = (uint8_t)(sz >> 16);
-        buf[39] = (uint8_t)(sz >> 24);
-    }
-
-    buf[40] = 0;
-    buf[41] = 0;
-    buf[42] = 0;
-    buf[43] = 0;
-    buf[44] = 0;
-    buf[45] = 0;
-    buf[46] = 0;
-    buf[47] = 0;
-
-    if(fseek(cxt->fp, cxt->fpos, SEEK_SET)) {
-        printf("Seek error: %s\n", strerror(errno));
-        return -1;
-    }
-
-    if(fwrite(buf, 1, 48, cxt->fp) != 48) {
-        printf("Cannot write to file: %s\n", strerror(errno));
-        return -2;
-    }
-
-    cxt->fpos += 48;
-
-    if(fseek(cxt->fp, cxt->wpos, SEEK_SET)) {
-        printf("Seek error: %s\n", strerror(errno));
-        return -3;
-    }
-
-    /* Copy the file over from the old archive to the new one. */
-    if(copy_file(cxt->fp, fp, sz))
-        return -4;
-
-    /* Add padding, as needed. */
-    if((cxt->wpos = pad_file(cxt->fp, 2048)) < 0)
-        return -5;
-
-    return 0;
-}
-
-int create_gsl(const char *fn, const char *files[], uint32_t count) {
-    FILE *ofp;
-    int fd;
-    char tmpfn[16];
-    long fpos, wpos, hdrlen;
-
-#ifndef _WIN32
-    mode_t mask;
-#endif
-
-    /* If the user hasn't specified the endianness of the file he or she is
-       creating, then assume big endian. */
-    if(endianness == GSL_AUTO)
-        endianness = GSL_BIG;
-
-    /* Figure out the size of the header. Sega's files seem (to me) to have no
-       rhyme or reason to how long the header is. I just round it up to the next
-       multiple of 2048.  */
-    hdrlen = ((count * 48) + 2048) & 0xFFFFF000;
-
-    /* Open up a temporary file for writing. */
-    strcpy(tmpfn, "gsltoolXXXXXX");
-    if((fd = mkstemp(tmpfn)) < 0) {
-        printf("Cannot create temporary file: %s\n", strerror(errno));
-        return -1;
-    }
-
-    if(!(ofp = fdopen(fd, "wb"))) {
-        printf("Cannot open temporary file: %s\n", strerror(errno));
-        close(fd);
-        unlink(tmpfn);
-        return -2;
-    }
-
-    /* Make space for the file table. */
-    fpos = 0;
-
-    if(fseek(ofp, hdrlen, SEEK_SET)) {
-        printf("Cannot create blank file table: %s\n", strerror(errno));
-        fclose(ofp);
-        unlink(tmpfn);
-        return -4;
-    }
-
-    /* Save where we'll write the first file and move back to the file table. */
-    wpos = ftell(ofp);
-    if(fseek(ofp, fpos, SEEK_SET)) {
-        printf("Seek error: %s\n", strerror(errno));
-        fclose(ofp);
-        unlink(tmpfn);
-        return -5;
-    }
-
-    /* Add all the files to the archive. */
-    if(add_files_to_gsl(ofp, fpos, wpos, files, count, NULL, NULL)) {
-        fclose(ofp);
-        unlink(tmpfn);
-        return -6;
-    }
-
-    /* All the files are copied, so move the archive into its place. */
-#ifndef _WIN32
-    mask = umask(0);
-    umask(mask);
-    fchmod(fileno(ofp), (~mask) & 0666);
-#endif
-    fclose(ofp);
-    rename(tmpfn, fn);
-
-    return 0;
-}
-
-int add_to_gsl(const char *fn, const char *files[], uint32_t count) {
-    FILE *ofp;
-    int fd;
-    char tmpfn[16];
-    int entries;
-    long fpos, wpos, hdrlen;
-
-#ifndef _WIN32
-    mode_t mask;
-#endif
-
-    /* Figure out how many files are already in the file... */
-    if((entries = scan_gsl(fn, NULL, NULL)) < 0) {
-        return -11;
-    }
-
-    /* Figure out the size of the header. Sega's files seem (to me) to have no
-       rhyme or reason to how long the header is. I just round it up to the next
-       multiple of 2048.  */
-    hdrlen = (((count + entries) * 48) + 2048) & 0xFFFFF000;
-
-    /* Open up a temporary file for writing. */
-    strcpy(tmpfn, "gsltoolXXXXXX");
-    if((fd = mkstemp(tmpfn)) < 0) {
-        printf("Cannot create temporary file: %s\n", strerror(errno));
-        return -1;
-    }
-
-    if(!(ofp = fdopen(fd, "wb"))) {
-        printf("Cannot open temporary file: %s\n", strerror(errno));
-        close(fd);
-        unlink(tmpfn);
-        return -2;
-    }
-
-    /* Make space for the file table. */
-    if(fseek(ofp, hdrlen, SEEK_SET)) {
-        printf("Cannot create blank file table: %s\n", strerror(errno));
-        fclose(ofp);
-        unlink(tmpfn);
-        return -3;
-    }
-
-    /* Copy the data from the existing file to the new one. */
-    if(scan_gsl(fn, &copy_file_cb, ofp) < 0) {
-        fclose(ofp);
-        unlink(tmpfn);
-        return -5;
-    }
-
-    wpos = ftell(ofp);
-    fpos = entries * 48;
-
-    if(fseek(ofp, fpos, SEEK_SET)) {
-        printf("Seek error: %s\n", strerror(errno));
-        fclose(ofp);
-        unlink(tmpfn);
-        return -9;
-    }
-
-    /* Add all the new files to the archive. */
-    if(add_files_to_gsl(ofp, fpos, wpos, files, count, NULL, NULL)) {
-        fclose(ofp);
-        unlink(tmpfn);
-        return -10;
-    }
-
-    /* All the files are copied, so move the archive into its place. */
-#ifndef _WIN32
-    mask = umask(0);
-    umask(mask);
-    fchmod(fileno(ofp), (~mask) & 0666);
-#endif
-    fclose(ofp);
-    rename(tmpfn, fn);
-
-    return 0;
-}
-
-int update_gsl(const char *fn, const char *file, const char *path) {
-    int fd;
-    char tmpfn[16];
-    int entries;
-    struct update_cxt cxt;
-    long hdrlen;
-
-#ifndef _WIN32
-    mode_t mask;
-#endif
-
-    /* Parse out all the entries for the context first. */
-    memset(&cxt, 0, sizeof(cxt));
-    cxt.fn = file;
-    cxt.path = path;
-
-    /* Figure out how many files are already in the file... */
-    if((entries = scan_gsl(fn, NULL, NULL)) < 0) {
-        return -11;
-    }
-
-    /* Figure out the size of the header. Sega's files seem (to me) to have no
-       rhyme or reason to how long the header is. I just round it up to the next
-       multiple of 2048.  */
-    hdrlen = ((entries * 48) + 2048) & 0xFFFFF000;
-
-    /* Open up a temporary file for writing. */
-    strcpy(tmpfn, "gsltoolXXXXXX");
-    if((fd = mkstemp(tmpfn)) < 0) {
-        printf("Cannot create temporary file: %s\n", strerror(errno));
-        return -3;
-    }
-
-    if(!(cxt.fp = fdopen(fd, "wb"))) {
-        printf("Cannot open temporary file: %s\n", strerror(errno));
-        close(fd);
-        unlink(tmpfn);
-        return -4;
-    }
-
-    if(fseek(cxt.fp, hdrlen, SEEK_SET)) {
-        printf("Cannot create blank file table: %s\n", strerror(errno));
-        fclose(cxt.fp);
-        unlink(tmpfn);
-        return -5;
-    }
-
-    /* Save where we'll write the first file and move back to the file table. */
-    cxt.wpos = ftell(cxt.fp);
-    if(fseek(cxt.fp, cxt.fpos, SEEK_SET)) {
-        printf("Seek error: %s\n", strerror(errno));
-        fclose(cxt.fp);
-        unlink(tmpfn);
-        return -6;
-    }
-
-    if(scan_gsl(fn, &copy_update, &cxt) < 0) {
-        fclose(cxt.fp);
-        unlink(tmpfn);
-        return -7;
-    }
-
-    /* All the files are copied, so move the archive into its place. */
-#ifndef _WIN32
-    mask = umask(0);
-    umask(mask);
-    fchmod(fileno(cxt.fp), (~mask) & 0666);
-#endif
-    fclose(cxt.fp);
-    rename(tmpfn, fn);
-
-    return 0;
-}
-
-int delete_from_gsl(const char *fn, const char *files[], uint32_t cnt) {
-    int fd;
-    char tmpfn[16];
-    int entries;
-    struct delete_cxt cxt;
-    uint32_t i;
-
-#ifndef _WIN32
-    mode_t mask;
-#endif
-
-    /* Parse out all the entries for the context first. */
-    memset(&cxt, 0, sizeof(cxt));
-    cxt.item_count = cnt;
-
-    if(!(cxt.items = (const char **)malloc(sizeof(const char *) * cnt))) {
-        printf("Cannot allocate memory: %s\n", strerror(errno));
-        return -1;
-    }
-
-    errno = 0;
-    for(i = 0; i < cnt; ++i) {
-        cxt.items[i] = files[i];
-    }
-
-    /* Figure out how many files are already in the file... */
-    if((entries = scan_gsl(fn, NULL, NULL)) < 0) {
-        free((void *)cxt.items);
-        return -11;
-    }
-
-    /* Figure out the size of the header. Sega's files seem (to me) to have no
-       rhyme or reason to how long the header is. I just round it up to the next
-       multiple of 2048.  */
-    cxt.wpos = ((entries * 48) + 2048) & 0xFFFFF000;
-
-    /* Open up a temporary file for writing. */
-    strcpy(tmpfn, "gsltoolXXXXXX");
-    if((fd = mkstemp(tmpfn)) < 0) {
-        printf("Cannot create temporary file: %s\n", strerror(errno));
-        free((void *)cxt.items);
-        return -3;
-    }
-
-    if(!(cxt.fp = fdopen(fd, "wb"))) {
-        printf("Cannot open temporary file: %s\n", strerror(errno));
-        close(fd);
-        unlink(tmpfn);
-        free((void *)cxt.items);
-        return -4;
-    }
-
-    /* Make space for the file table. */
-    cxt.fpos = 0;
-
-    if(fseek(cxt.fp, cxt.wpos, SEEK_SET)) {
-        printf("Cannot create blank file table: %s\n", strerror(errno));
-        fclose(cxt.fp);
-        unlink(tmpfn);
-        free((void *)cxt.items);
-        return -5;
-    }
-
-    /* Save where we'll write the first file and move back to the file table. */
-    if(fseek(cxt.fp, cxt.fpos, SEEK_SET)) {
-        printf("Seek error: %s\n", strerror(errno));
-        fclose(cxt.fp);
-        unlink(tmpfn);
-        free((void *)cxt.items);
-        return -6;
-    }
-
-    if(scan_gsl(fn, &copy_filtered, &cxt) < 0) {
-        fclose(cxt.fp);
-        unlink(tmpfn);
-        free((void *)cxt.items);
-        return -7;
-    }
-
-    free((void *)cxt.items);
-
-    /* All the files are copied, so move the archive into its place. */
-#ifndef _WIN32
-    mask = umask(0);
-    umask(mask);
-    fchmod(fileno(cxt.fp), (~mask) & 0666);
-#endif
-    fclose(cxt.fp);
-    rename(tmpfn, fn);
-
-    return 0;
-}
-
-int print_gsl_files(const char *fn) {
-    return scan_gsl(fn, &print_file_info, NULL);
-}
-
-int extract_gsl(const char *fn) {
-    return scan_gsl(fn, &extract_file, (void *)fn);
-}
-
-void gsl_set_endianness(int e) {
-    endianness = e;
+    return -1;
 }

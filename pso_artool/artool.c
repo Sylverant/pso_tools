@@ -1,7 +1,7 @@
 /*
     Sylverant PSO Tools
     PSO Archive Tool
-    Copyright (C) 2014 Lawrence Sebald
+    Copyright (C) 2014, 2016 Lawrence Sebald
 
     This program is free software: you can redistribute it and/or modify
     it under the terms of the GNU Affero General Public License version 3
@@ -25,54 +25,91 @@
 #define ARCHIVE_TYPE_NONE   -1
 #define ARCHIVE_TYPE_AFS    0
 #define ARCHIVE_TYPE_GSL    1
+#define ARCHIVE_TYPE_PRS    2
+#define ARCHIVE_TYPE_PRSD   3
 
-#define ARCHIVE_TYPE_COUNT  2
+#define ARCHIVE_TYPE_COUNT  4
 
-#define GSL_BIG     0
-#define GSL_LITTLE  1
+extern int afs(int argc, const char *argv[]);
+extern int gsl(int argc, const char *argv[]);
+extern int prs(int argc, const char *argv[]);
+extern int prsd(int argc, const char *argv[]);
 
-/* Archive manipulation functions. These should probably go in a header, but I'm
-   feeling lazy at the moment. */
-int print_afs_files(const char *fn);
-int extract_afs(const char *fn);
-int create_afs(const char *fn, const char *files[], uint32_t count);
-int add_to_afs(const char *fn, const char *files[], uint32_t count);
-int update_afs(const char *fn, const char *fno, const char *path);
-int delete_from_afs(const char *fn, const char *files[], uint32_t cnt);
-
-int print_gsl_files(const char *fn);
-int extract_gsl(const char *fn);
-int create_gsl(const char *fn, const char *files[], uint32_t count);
-int add_to_gsl(const char *fn, const char *files[], uint32_t count);
-int update_gsl(const char *fn, const char *file, const char *path);
-int delete_from_gsl(const char *fn, const char *files[], uint32_t cnt);
-void gsl_set_endianness(int e);
-
-/* This looks ugly, but whatever. */
-struct {
-    int (*print)(const char *);
-    int (*extract)(const char *);
-    int (*create)(const char *, const char *[], uint32_t);
-    int (*add)(const char *, const char *[], uint32_t);
-    int (*update)(const char *, const char *, const char *);
-    int (*delete)(const char *, const char *[], uint32_t);
-} archive_funcs[ARCHIVE_TYPE_COUNT] = {
-    { &print_afs_files, &extract_afs, &create_afs, &add_to_afs, &update_afs,
-      &delete_from_afs },
-    { &print_gsl_files, &extract_gsl, &create_gsl, &add_to_gsl, &update_gsl,
-      &delete_from_gsl }
+int (*archive_funcs[ARCHIVE_TYPE_COUNT])(int argc, const char *argv[]) = {
+    &afs, &gsl, &prs, &prsd
 };
+
+/* Utility functions... */
+int write_file(const char *fn, const uint8_t *buf, size_t sz) {
+    FILE *fp;
+
+    if(!(fp = fopen(fn, "wb"))) {
+        perror("Cannot write file");
+        return EXIT_FAILURE;
+    }
+
+    if(fwrite(buf, 1, sz, fp) != sz) {
+        perror("Cannot write file");
+        fclose(fp);
+        return EXIT_FAILURE;
+    }
+
+    fclose(fp);
+    return 0;
+}
+
+int read_file(const char *fn, uint8_t **buf) {
+    FILE *fp;
+    uint8_t *out;
+    size_t len;
+
+    if(!(fp = fopen(fn, "rb"))) {
+        perror("Cannot read file");
+        return -1;
+    }
+
+    if(fseek(fp, 0, SEEK_END)) {
+        perror("Cannot read file");
+        fclose(fp);
+        return -1;
+    }
+
+    len = (size_t)ftell(fp);
+
+    if(fseek(fp, 0, SEEK_SET)) {
+        perror("Cannot read file");
+        fclose(fp);
+        return -1;
+    }
+
+    if(!(out = malloc(len))) {
+        perror("Cannot read file");
+        fclose(fp);
+        return -1;
+    }
+
+    if(fread(out, 1, len, fp) != len) {
+        perror("Cannot read file");
+        free(out);
+        fclose(fp);
+        return -1;
+    }
+
+    fclose(fp);
+    *buf = out;
+    return (int)len;
+}
 
 /* Print information about this program to stdout. */
 static void print_program_info(void) {
 #if defined(VERSION)
     printf("Sylverant PSO Archive Tool version %s\n", VERSION);
-#elif defined(SVN_REVISION)
-    printf("Sylverant PSO Archive Tool SVN revision: %s\n", SVN_REVISION);
+#elif defined(GIT_REVISION)
+    printf("Sylverant PSO Archive Tool Git revision: %s\n", GIT_REVISION);
 #else
     printf("Sylverant PSO Archive Tool\n");
 #endif
-    printf("Copyright (C) 2014 Lawrence Sebald\n\n");
+    printf("Copyright (C) 2014, 2016 Lawrence Sebald\n\n");
     printf("This program is free software: you can redistribute it and/or\n"
            "modify it under the terms of the GNU Affero General Public\n"
            "License version 3 as published by the Free Software Foundation.\n\n"
@@ -87,39 +124,60 @@ static void print_program_info(void) {
 
 /* Print help to the user to stdout. */
 static void print_help(const char *bin) {
-    printf("Usage:\n"
+    printf("General usage:\n"
            "    %s type operation [operation aguments]\n"
-           "Where type is one of --afs, --gsl, --gsl-little, or --gsl-big.\n"
-           "Available operations and their arguments are shown below:\n"
-           "To list the files in an archive:\n"
-           "    -t archive\n"
-           "To extract an archive:\n"
-           "    -x archive\n"
-           "To create an archive:\n"
-           "    -c archive file1 [file2 ...]\n"
-           "To add files to an archive:\n"
-           "    -r archive file1 [file2 ...]\n"
-           "To update a file in an archive (or replace it with another file):\n"
-           "    -u archive file_in_archive filename\n"
-           "To remove a file from an archive:\n"
-           "    --delete archive file1 [file2 ...]\n\n"
-           "Other general operations (which don't require a type):\n"
-           "To print this help message:\n"
-           "    --help\n"
-           "To print version information:\n"
-           "    --version\n\n", bin);
-    printf("As AFS archives do not store filenames, any files specified in an\n"
-           "AFS archive are specified by index within the archive (for the -u\n"
-           "and --delete operations). For other archive formats, you should\n"
-           "specify the file names within the archive for these operations.\n"
-           "\n");
-    printf("GSL archives are supported in both big- and little-endian forms.\n"
-           "If the endianness is not specified (by way of the --gsl-big or\n"
-           "--gsl-little types), then it will be auto-detected for all\n"
-           "operations other than archive creation (big-endian is assumed if\n"
-           "endianness is not specified for archive creation). You should use\n"
-           "big-endian mode for PSOGC files and little-endian mode for any\n"
-           "other versions of the game.\n");
+           "    %s --help\n"
+           "    %s --version\n"
+           "Where type is one of the following:\n"
+           "    --afs, --afs2, --gsl, --gsl-little, --gsl-big, --prs, --prsd,\n"
+           "    --prsd-little, --prsd-big, --prc, --prc-little, or --prc-big\n"
+           "    (the prc options are aliases of the prsd ones)\n\n"
+           "Available operations per archive type are shown below:\n\n"
+           "For AFS (--afs, --afs2) and GSL (--gsl, --gsl-little, --gsl-big)\n"
+           "files:\n"
+           " -t archive\n"
+           "    List all files in the archive.\n"
+           " -x archive\n"
+           "    Extract all files from the archive.\n"
+           " -c archive file1 [file2 ...]\n"
+           "    Create a new archive containing the files specified.\n"
+           " -r archive file1 [file2 ...]\n"
+           "    Append the files specified to an existing archive.\n"
+           " -u archive file_in_archive file_on_disk\n"
+           "    Update an archive, replacing the file contained in it with\n"
+           "    the file on the disk.\n"
+           " --delete archive file1 [file2 ...]\n"
+           "    Delete the specified files from the archive.\n\n"
+           "For PRS (--prs) files:\n"
+           " -x archive [to]\n"
+           "    Extract the archive to the specified filename. If to is not\n"
+           "    specified, the default output filename shall have the same\n"
+           "    basename as the archive with the extension .bin appended.\n"
+           " -c archive file\n"
+           "    Compress the specified file and store it as archive.\n\n"
+           "For PRSD/PRC (--prsd, --prsd-little, --prsd-big, --prc, \n"
+           "              --prc-little, --prc-big) files:\n"
+           " -x archive [to]\n"
+           "    Extract the archive to the specified filename. If to is not\n"
+           "    specified, the default output filename shall have the same\n"
+           "    basename as the archive with the extension .bin appended.\n"
+           " -c archive file [key]\n"
+           "    Compress the specified file and store it as archive. If\n"
+           "    specified, key will be used as the encryption key for the\n"
+           "    archive, otherwise a random key will be generated.\n\n",
+           bin, bin, bin);
+    printf("Many AFS files do not store filenames at all. Files created by\n"
+           "this tool with the --afs type will not contain filenames, whereas\n"
+           "those created with --afs2 will. If using the --afs type, any\n"
+           "files that are specified in an archive (for the -u and --delete\n"
+           "operations) must be specified by index, not by name.\n\n");
+    printf("GSL and PRSD/PRC archives are supported in both big and\n"
+           "little-endian forms. If the endianness is not specified, then it\n"
+           "will be auto-detected for operations other than archive creation.\n"
+           "For archive creation, little-endian mode is assumed if the\n"
+           "endianness is not specified.\n"
+           "Big-endian archives are used in PSO for Gamecube, whereas all\n"
+           "other versions of the game use little-endian archives.\n\n");
 }
 
 /* Parse any command-line arguments passed in. */
@@ -132,19 +190,20 @@ static void parse_command_line(int argc, const char *argv[]) {
         exit(EXIT_FAILURE);
     }
 
-    if(!strcmp(argv[1], "--afs")) {
+    if(!strcmp(argv[1], "--afs") || !strcmp(argv[1], "--afs2")) {
         t = ARCHIVE_TYPE_AFS;
     }
-    else if(!strcmp(argv[1], "--gsl")) {
+    else if(!strcmp(argv[1], "--gsl") || !strcmp(argv[1], "--gsl-little") ||
+            !strcmp(argv[1], "--gsl-big")) {
         t = ARCHIVE_TYPE_GSL;
     }
-    else if(!strcmp(argv[1], "--gsl-little")) {
-        t = ARCHIVE_TYPE_GSL;
-        gsl_set_endianness(GSL_LITTLE);
+    else if(!strcmp(argv[1], "--prs")) {
+        t = ARCHIVE_TYPE_PRS;
     }
-    else if(!strcmp(argv[1], "--gsl-big")) {
-        t = ARCHIVE_TYPE_GSL;
-        gsl_set_endianness(GSL_BIG);
+    else if(!strcmp(argv[1], "--prsd") || !strcmp(argv[1], "--prsd-little") ||
+            !strcmp(argv[1], "--prsd-big") || !strcmp(argv[1], "--prc") ||
+            !strcmp(argv[1], "--prc-little") || !strcmp(argv[1], "--prc-big")) {
+        t = ARCHIVE_TYPE_PRSD;
     }
     else {
         i = 1;
@@ -166,68 +225,14 @@ static void parse_command_line(int argc, const char *argv[]) {
         exit(EXIT_FAILURE);
     }
 
-    /* See what they asked us to do. */
-    if(!strcmp(argv[2], "-t")) {
-        if(argc != 4) {
-            print_help(argv[0]);
-            exit(EXIT_FAILURE);
-        }
-
-        if(archive_funcs[t].print(argv[3]) < 0)
-            exit(EXIT_FAILURE);
-    }
-    else if(!strcmp(argv[2], "-x")) {
-        if(argc != 4) {
-            print_help(argv[0]);
-            exit(EXIT_FAILURE);
-        }
-
-        if(archive_funcs[t].extract(argv[3]) < 0)
-            exit(EXIT_FAILURE);
-    }
-    else if(!strcmp(argv[2], "-c")) {
-        if(argc < 5) {
-            print_help(argv[0]);
-            exit(EXIT_FAILURE);
-        }
-
-        if(archive_funcs[t].create(argv[3], argv + 4, argc - 4))
-            exit(EXIT_FAILURE);
-    }
-    else if(!strcmp(argv[2], "-r")) {
-        if(argc < 5) {
-            print_help(argv[0]);
-            exit(EXIT_FAILURE);
-        }
-
-        if(archive_funcs[t].add(argv[3], argv + 4, argc - 4))
-            exit(EXIT_FAILURE);
-    }
-    else if(!strcmp(argv[2], "-u")) {
-        if(argc != 6) {
-            print_help(argv[0]);
-            exit(EXIT_FAILURE);
-        }
-
-        if(archive_funcs[t].update(argv[3], argv[4], argv[5]))
-            exit(EXIT_FAILURE);
-    }
-    else if(!strcmp(argv[2], "--delete")) {
-        if(argc < 5) {
-            print_help(argv[0]);
-            exit(EXIT_FAILURE);
-        }
-
-        if(archive_funcs[t].delete(argv[3], argv + 4, argc - 4))
-            exit(EXIT_FAILURE);
-    }
-    else {
-        printf("Illegal archive operation argument: %s\n", argv[2]);
+    /* Leave it up to the handler to do the rest of the work. */
+    i = archive_funcs[t](argc, argv);
+    if(i == -1) {
         print_help(argv[0]);
         exit(EXIT_FAILURE);
     }
 
-    exit(EXIT_SUCCESS);
+    exit(i);
 }
 
 int main(int argc, const char *argv[]) {
