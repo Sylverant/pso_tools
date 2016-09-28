@@ -1,0 +1,26 @@
+# MinGW-w64 Makefile.
+# Would probably work with plain ol' MinGW too, but I haven't tried.
+
+CC = i686-w64-mingw32-gcc
+SRCS = artool.c prs.c prsd.c afs.c gsl.c windows_compat.c
+LIBS = -lpsoarchive
+TARGET = pso_artool.exe
+CFLAGS ?= -Wall -Wextra
+LDFLAGS ?= -Wall -Wextra
+
+# Nothing should have to change below here...
+
+OBJS = $(patsubst %.c,%.o,$(SRCS))
+
+all: $(TARGET)
+
+%.o: %.c
+	$(CC) $(CFLAGS) -c $< -o $@
+
+$(TARGET): $(OBJS)
+	$(CC) $(CFLAGS) -o $@ $(OBJS) $(LDFLAGS) $(LIBS)
+
+.PHONY: clean install
+
+clean:
+	-rm -fr $(TARGET) $(OBJS) *.dSYM
