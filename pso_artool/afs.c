@@ -34,6 +34,10 @@
 
 static int make_fntab = 0;
 
+#ifdef _WIN32
+#include "windows_compat.h"
+#endif
+
 static int digits(uint32_t n) {
     int r = 1;
     while(n /= 10) ++r;

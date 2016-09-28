@@ -31,6 +31,10 @@
 
 #include <psoarchive/GSL.h>
 
+#ifdef _WIN32
+#include "windows_compat.h"
+#endif
+
 static uint32_t endian = 0;
 
 static int digits(uint32_t n) {

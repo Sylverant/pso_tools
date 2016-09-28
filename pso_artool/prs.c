@@ -23,6 +23,8 @@
 
 #ifndef _WIN32
 #include <libgen.h>
+#else
+#include "windows_compat.h"
 #endif
 
 extern int write_file(const char *fn, const uint8_t *buf, size_t sz);

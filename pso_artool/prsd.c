@@ -25,6 +25,8 @@
 
 #ifndef _WIN32
 #include <libgen.h>
+#else
+#include "windows_compat.h"
 #endif
 
 extern int write_file(const char *fn, const uint8_t *buf, size_t sz);
@@ -101,7 +103,7 @@ int prsd(int argc, const char *argv[]) {
         if((sz = read_file(argv[4], &src)) < 0)
             return EXIT_FAILURE;
 
-        if((sz = pso_prsd_compress(src, &dst, sz, 0xfeedface, endian)) < 0) {
+        if((sz = pso_prsd_compress(src, &dst, sz, key, endian)) < 0) {
             fprintf(stderr, "Cannot compress %s: %s\n", argv[4],
                     pso_strerror(sz));
             return EXIT_FAILURE;

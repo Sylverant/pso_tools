@@ -1,7 +1,7 @@
 /*
     Sylverant PSO Tools
     PSO Archive Tool
-    Copyright (C) 2014 Lawrence Sebald
+    Copyright (C) 2014, 2016 Lawrence Sebald
 
     This program is free software: you can redistribute it and/or modify
     it under the terms of the GNU Affero General Public License version 3
@@ -28,6 +28,8 @@
 #include <stdio.h>
 #include <errno.h>
 #include <fcntl.h>
+
+#include <sys/utime.h>
 
 /* mkstemp extracted from libc/sysdeps/posix/tempname.c.  Copyright
    (C) 1991-1999, 2000, 2001, 2006 Free Software Foundation, Inc.
@@ -149,6 +151,15 @@ int my_rename(const char *old, const char *new) {
         return -1;
 
     return 0;
+}
+
+int utimes(const char *path, const struct timeval tv[2]) {
+    struct _utimbuf times;
+
+    times.actime = tv[0].tv_sec;
+    times.modtime = tv[1].tv_sec;
+
+    return _utime(path, &times);
 }
 
 #endif
