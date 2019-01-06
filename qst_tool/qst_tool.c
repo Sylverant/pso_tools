@@ -873,6 +873,7 @@ static int merge_chunks2(FILE *qst, const char *bfn, const char *dfn, FILE *bfp,
     int bindone = 0, datdone = 0, pvrdone = 0;
     ssize_t amt;
     size_t chsz = sizeof(qst_chunk);
+    uint32_t nil = 0;
 
     if(!pfn || !pfp)
         pvrdone = 1;
@@ -917,7 +918,7 @@ static int merge_chunks2(FILE *qst, const char *bfn, const char *dfn, FILE *bfp,
             }
 
             /* Sigh... */
-            fseek(qst, 4, SEEK_CUR);
+            fwrite(&nil, 1, 4, qst);
         }
 
         /* Next, do the bin file if we've got any more to read from it */
@@ -952,7 +953,7 @@ static int merge_chunks2(FILE *qst, const char *bfn, const char *dfn, FILE *bfp,
             }
 
             /* Sigh... */
-            fseek(qst, 4, SEEK_CUR);
+            fwrite(&nil, 1, 4, qst);
         }
 
         /* Finally, if there's a .pvr file, do it if we have anything to do */
@@ -987,7 +988,7 @@ static int merge_chunks2(FILE *qst, const char *bfn, const char *dfn, FILE *bfp,
             }
 
             /* Sigh... */
-            fseek(qst, 4, SEEK_CUR);
+            fwrite(&nil, 1, 4, qst);
         }
 
         ++*nptr;
