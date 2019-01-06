@@ -1,6 +1,6 @@
 /*
     Sylverant Quest Tool
-    Copyright (C) 2012, 2015 Lawrence Sebald
+    Copyright (C) 2012, 2015, 2019 Lawrence Sebald
 
     This program is free software: you can redistribute it and/or modify
     it under the terms of the GNU General Public License version 3
@@ -103,15 +103,32 @@ typedef struct gc_qst_hdr_s {
     uint32_t length;
 } PACKED gc_qst_hdr;
 
+typedef struct bb_qst_hdr_s {
+    bb_pkt_hdr_t hdr;
+    char unused1[32];
+    uint16_t unused2;
+    uint16_t flags;
+    char filename[16];
+    uint32_t length;
+    char name[24];
+} PACKED bb_qst_hdr;
+
 typedef struct dc_quest_chunk {
     union {
         dc_pkt_hdr_t dc;
         pc_pkt_hdr_t pc;
     } hdr;
     char filename[16];
-    char data[1024];
+    uint8_t data[1024];
     uint32_t length;
 } PACKED qst_chunk;
+
+typedef struct bb_quest_chunk {
+    bb_pkt_hdr_t hdr;
+    char filename[16];
+    uint8_t data[1024];
+    uint32_t length;
+} PACKED bb_qst_chunk;
 
 #if defined(_MSC_VER)
 #pragma pack(pop)
@@ -127,6 +144,7 @@ typedef struct dc_quest_chunk {
 #define QUEST_VER_DC                    0x00000001
 #define QUEST_VER_PC                    0x00000002
 #define QUEST_VER_GC                    0x00000004
+#define QUEST_VER_BB                    0x00000008
 
 #define QUEST_TYPE_ONLINE               0x00000100
 #define QUEST_TYPE_DOWNLOAD             0x00000200
@@ -148,6 +166,7 @@ static void usage(const char *argv[]) {
     printf("    dc - Dreamcast (online)\n"
            "    pc - PSO for PC (online)\n"
            "    gc - PSO for Gamecube (online)\n"
+           "    bb - Blue Burst (online)\n"
            "    dcdl - Dreamcast (download)\n"
            "    pcdl - PSO for PC (download)\n"
            "    gcdl - PSO for Gamecube (download)\n");
@@ -181,6 +200,10 @@ static uint32_t detect_qst_type(void) {
         /* PC */
         rv = QUEST_VER_PC | QUEST_TYPE_DOWNLOAD;
     }
+    else if(buf[0] == 0x58 && buf[2] == QUEST_FILE_TYPE) {
+        /* BB -- there is no bb download quest type */
+        rv = QUEST_VER_BB | QUEST_TYPE_ONLINE;
+    }
     else {
         return QUEST_TYPE_INVALID;
     }
@@ -192,6 +215,7 @@ int process_hdr_file(uint32_t qst_type) {
     FILE *fp;
     dc_qst_hdr *dchdr = (dc_qst_hdr *)buf;
     pc_qst_hdr *pchdr = (pc_qst_hdr *)buf;
+    bb_qst_hdr *bbhdr = (bb_qst_hdr *)buf;
     char fn[32];
 
     /* Open the header file */
@@ -225,6 +249,17 @@ pc_gc_common:
             fp = fopen(fn, "wb");
             break;
 
+        case QUEST_VER_BB:
+            if(buf[0] != QUEST_FILE_TYPE)
+                return -2;
+
+            strncpy(fn, bbhdr->filename, 16);
+            fn[16] = 0;
+            unlink(fn);
+            strcat(fn, ".hdr");
+            fp = fopen(fn, "wb");
+            break;
+
         default:
             fprintf(stderr, "Unknown quest version: %d\n", qst_type & 0xFF);
             return -1;
@@ -236,9 +271,17 @@ pc_gc_common:
     }
 
     /* Write the file out and clean up */
-    if(fwrite(buf, 1, sizeof(dc_qst_hdr), fp) != sizeof(dc_qst_hdr)) {
-        perror("fwrite");
-        return -1;
+    if((qst_type & 0x000000FF) != QUEST_VER_BB) {
+        if(fwrite(buf, 1, sizeof(dc_qst_hdr), fp) != sizeof(dc_qst_hdr)) {
+            perror("fwrite");
+            return -1;
+        }
+    }
+    else {
+        if(fwrite(buf, 1, sizeof(bb_qst_hdr), fp) != sizeof(bb_qst_hdr)) {
+            perror("fwrite");
+            return -1;
+        }
     }
 
     fclose(fp);
@@ -363,6 +406,7 @@ static int qst_to_bindat(const char *fn) {
     FILE *fp;
     uint32_t qst_type;
     int rv = 0, morehdr = 0;
+    int hdr_size = sizeof(dc_qst_hdr);
 
     if(!(fp = fopen(fn, "rb"))) {
         perror("fopen");
@@ -382,6 +426,16 @@ static int qst_to_bindat(const char *fn) {
         goto out_close_qst;
     }
 
+    /* If it's bb, we have a few more bytes to read... */
+    if(qst_type == (QUEST_TYPE_ONLINE | QUEST_VER_BB)) {
+        hdr_size = sizeof(bb_qst_hdr);
+        if(fread(buf + 0x3C, 1, 0x1C, fp) != 0x1C) {
+            perror("fread");
+            rv = -1;
+            goto out_close_qst;
+        }
+    }
+
     /* Write the first header out */
     if(process_hdr_file(qst_type)) {
         rv = -1;
@@ -389,7 +443,7 @@ static int qst_to_bindat(const char *fn) {
     }
 
     /* Read the second header in */
-    if(fread(buf, 1, sizeof(dc_qst_hdr), fp) != sizeof(dc_qst_hdr)) {
+    if(fread(buf, 1, hdr_size, fp) != hdr_size) {
         perror("fread");
         rv = -1;
         goto out_close_qst;
@@ -404,7 +458,7 @@ static int qst_to_bindat(const char *fn) {
     /* Handle any additional files. This is probably limited to one file, but
        doing it for the generic case is just as easy. */
     while(!morehdr) {
-        if(fread(buf, 1, sizeof(dc_qst_hdr), fp) != sizeof(dc_qst_hdr)) {
+        if(fread(buf, 1, hdr_size, fp) != hdr_size) {
             perror("fread");
             rv = -1;
             goto out_close_qst;
@@ -417,7 +471,7 @@ static int qst_to_bindat(const char *fn) {
     }
 
     /* We've read one file header beyond where we belong, so rewind. */
-    if(fseek(fp, -sizeof(dc_qst_hdr), SEEK_CUR)) {
+    if(fseek(fp, -hdr_size, SEEK_CUR)) {
         perror("fseek");
         rv = -1;
         goto out_close_qst;
@@ -433,6 +487,11 @@ static int qst_to_bindat(const char *fn) {
         case QUEST_VER_PC:
             rv = convert_pc_qst(fp);
             break;
+
+        case QUEST_VER_BB:
+            // XXXX
+            rv = -1;
+            break;
     }
 
 out_close_qst:
@@ -445,6 +504,8 @@ static int read_hdr(const char *fn, uint8_t mbuf[], uint32_t type, char **rfn) {
     dc_qst_hdr *dc = (dc_qst_hdr *)mbuf;
     pc_qst_hdr *pc = (pc_qst_hdr *)mbuf;
     gc_qst_hdr *gc = (gc_qst_hdr *)mbuf;
+    bb_qst_hdr *bb = (bb_qst_hdr *)mbuf;
+    long len;
 
     if(!(hfp = fopen(fn, "rb"))) {
         fprintf(stderr, "Error opening \"%s\": %s\n", fn, strerror(errno));
@@ -458,7 +519,9 @@ static int read_hdr(const char *fn, uint8_t mbuf[], uint32_t type, char **rfn) {
         return -1;
     }
 
-    if(ftell(hfp) != sizeof(dc_qst_hdr)) {
+    len = ftell(hfp);
+
+    if(len != sizeof(dc_qst_hdr) && len != sizeof(bb_qst_hdr)) {
         fprintf(stderr, "\"%s\" is not of the correct size\n", fn);
         fclose(hfp);
         return -1;
@@ -470,7 +533,7 @@ static int read_hdr(const char *fn, uint8_t mbuf[], uint32_t type, char **rfn) {
         return -1;
     }
 
-    if(fread(mbuf, 1, sizeof(dc_qst_hdr), hfp) != sizeof(dc_qst_hdr)) {
+    if(fread(mbuf, 1, len, hfp) != len) {
         fprintf(stderr, "Cannot read \"%s\"\n", fn);
         fclose(hfp);
         return -1;
@@ -521,6 +584,13 @@ static int read_hdr(const char *fn, uint8_t mbuf[], uint32_t type, char **rfn) {
                 goto bad_hdr;
             *rfn = gc->filename;
             break;
+
+        case QUEST_VER_BB | QUEST_TYPE_ONLINE:
+            if(bb->hdr.pkt_type != LE16(QUEST_FILE_TYPE) ||
+               bb->hdr.pkt_len != LE16(sizeof(bb_qst_hdr)))
+                goto bad_hdr;
+            *rfn = bb->filename;
+            break;
     }
 
     return 0;
@@ -534,6 +604,7 @@ static int make_hdr(const char *fn, uint8_t mbuf[], uint32_t type, char **rfn) {
     dc_qst_hdr *dc = (dc_qst_hdr *)mbuf;
     pc_qst_hdr *pc = (pc_qst_hdr *)mbuf;
     gc_qst_hdr *gc = (gc_qst_hdr *)mbuf;
+    bb_qst_hdr *bb = (bb_qst_hdr *)mbuf;
 
     /* Build the appropriate header... */
     switch(type) {
@@ -584,6 +655,14 @@ static int make_hdr(const char *fn, uint8_t mbuf[], uint32_t type, char **rfn) {
             strcpy(gc->filename, fn);
             *rfn = gc->filename;
             break;
+
+        case QUEST_VER_BB | QUEST_TYPE_ONLINE:
+            memset(bb, 0, sizeof(bb_qst_hdr));
+            bb->hdr.pkt_type = LE16(QUEST_FILE_TYPE);
+            bb->hdr.pkt_len = LE16(sizeof(bb_qst_hdr));
+            strcpy(bb->filename, fn);
+            *rfn = bb->filename;
+            break;
     }
 
     return 0;
@@ -596,6 +675,7 @@ static int merge_chunks(FILE *qst, const char *bfn, const char *dfn, FILE *bfp,
     uint8_t *nptr;
     int bindone = 0, datdone = 0, pvrdone = 0;
     ssize_t amt;
+    size_t chsz = sizeof(qst_chunk);
 
     if(!pfn || !pfp)
         pvrdone = 1;
@@ -623,7 +703,6 @@ static int merge_chunks(FILE *qst, const char *bfn, const char *dfn, FILE *bfp,
     }
 
     while(!bindone || !datdone || !pvrdone) {
-        printf("%d %d %d %d\n", *nptr, bindone, datdone, pvrdone);
         /* First, do the bin file if we've got any more to read from it */
         if(!bindone) {
             /* Clear the data */
@@ -646,7 +725,7 @@ static int merge_chunks(FILE *qst, const char *bfn, const char *dfn, FILE *bfp,
             if(amt != 0) {
                 printf("%s chunk %d (%d bytes)\n", bfn, (int)*nptr, (int)amt);
 
-                if(fwrite(chunk, 1, sizeof(qst_chunk), qst) != sizeof(qst_chunk)) {
+                if(fwrite(chunk, 1, chsz, qst) != chsz) {
                     perror("Cannot write to output file");
                     return -1;
                 }
@@ -678,7 +757,7 @@ static int merge_chunks(FILE *qst, const char *bfn, const char *dfn, FILE *bfp,
             if(amt != 0) {
                 printf("%s chunk %d (%d bytes)\n", dfn, (int)*nptr, (int)amt);
 
-                if(fwrite(chunk, 1, sizeof(qst_chunk), qst) != sizeof(qst_chunk)) {
+                if(fwrite(chunk, 1, chsz, qst) != chsz) {
                     perror("Cannot write to output file");
                     return -1;
                 }
@@ -711,7 +790,7 @@ static int merge_chunks(FILE *qst, const char *bfn, const char *dfn, FILE *bfp,
             if(amt != 0) {
                 printf("%s chunk %d (%d bytes)\n", pfn, (int)*nptr, (int)amt);
 
-                if(fwrite(chunk, 1, sizeof(qst_chunk), qst) != sizeof(qst_chunk)) {
+                if(fwrite(chunk, 1, chsz, qst) != chsz) {
                     perror("Cannot write to output file");
                     return -1;
                 }
@@ -727,13 +806,146 @@ static int merge_chunks(FILE *qst, const char *bfn, const char *dfn, FILE *bfp,
     return 0;
 }
 
+static int merge_chunks2(FILE *qst, const char *bfn, const char *dfn, FILE *bfp,
+                         FILE *dfp, uint32_t qst_type, const char *pfn,
+                         FILE *pfp) {
+    bb_qst_chunk *chunk = (bb_qst_chunk *)buf;
+    uint8_t *nptr;
+    int bindone = 0, datdone = 0, pvrdone = 0;
+    ssize_t amt;
+    size_t chsz = sizeof(qst_chunk);
+
+    if(!pfn || !pfp)
+        pvrdone = 1;
+
+    /* Set up the header first. */
+    chunk->hdr.pkt_len = LE16(sizeof(bb_qst_chunk));
+    nptr = (uint8_t *)&chunk->hdr.flags;
+    *nptr = 0;
+    chunk->hdr.pkt_type = LE16(QUEST_CHUNK_TYPE);
+    chsz = sizeof(bb_qst_chunk);
+
+    while(!bindone || !datdone || !pvrdone) {
+        /* First, do the dat file if we've got any more to read from it */
+        if(!datdone) {
+            /* Clear the data */
+            memset(chunk->data, 0, 1024);
+
+            /* Fill in what we need to */
+            memcpy(chunk->filename, dfn, 16);
+            amt = fread(chunk->data, 1, 0x400, dfp);
+            chunk->length = LE32(((uint32_t)amt));
+
+            /* Are we done with this file? */
+            if(amt != 0x400)
+                datdone = 1;
+
+            if(amt < 0) {
+                perror("Cannot read input file");
+                return -1;
+            }
+
+            if(amt != 0) {
+                printf("%s chunk %d (%d bytes)\n", dfn, (int)*nptr, (int)amt);
+
+                if(fwrite(chunk, 1, chsz, qst) != chsz) {
+                    perror("Cannot write to output file");
+                    return -1;
+                }
+            }
+            else {
+                datdone = 1;
+            }
+
+            /* Sigh... */
+            fseek(qst, 4, SEEK_CUR);
+        }
+
+        /* Next, do the bin file if we've got any more to read from it */
+        if(!bindone) {
+            /* Clear the data */
+            memset(chunk->data, 0, 1024);
+
+            /* Fill in what we need to */
+            memcpy(chunk->filename, bfn, 16);
+            amt = fread(chunk->data, 1, 0x400, bfp);
+            chunk->length = LE32(((uint32_t)amt));
+
+            /* Are we done with this file? */
+            if(amt != 0x400)
+                bindone = 1;
+
+            if(amt < 0) {
+                perror("Cannot read input file");
+                return -1;
+            }
+
+            if(amt != 0) {
+                printf("%s chunk %d (%d bytes)\n", bfn, (int)*nptr, (int)amt);
+
+                if(fwrite(chunk, 1, chsz, qst) != chsz) {
+                    perror("Cannot write to output file");
+                    return -1;
+                }
+            }
+            else {
+                bindone = 1;
+            }
+
+            /* Sigh... */
+            fseek(qst, 4, SEEK_CUR);
+        }
+
+        /* Finally, if there's a .pvr file, do it if we have anything to do */
+        if(!pvrdone) {
+            /* Clear the data */
+            memset(chunk->data, 0, 1024);
+
+            /* Fill in what we need to */
+            memcpy(chunk->filename, pfn, 16);
+            amt = fread(chunk->data, 1, 0x400, pfp);
+            chunk->length = LE32(((uint32_t)amt));
+
+            /* Are we done with this file? */
+            if(amt != 0x400)
+                pvrdone = 1;
+
+            if(amt < 0) {
+                perror("Cannot read input file");
+                return -1;
+            }
+
+            if(amt != 0) {
+                printf("%s chunk %d (%d bytes)\n", pfn, (int)*nptr, (int)amt);
+
+                if(fwrite(chunk, 1, chsz, qst) != chsz) {
+                    perror("Cannot write to output file");
+                    return -1;
+                }
+            }
+            else {
+                pvrdone = 1;
+            }
+
+            /* Sigh... */
+            fseek(qst, 4, SEEK_CUR);
+        }
+
+        ++*nptr;
+    }
+
+    return 0;
+}
+
 static int bindat_to_qst(int argc, const char *argv[]) {
     FILE *bfp, *dfp, *qst;
     uint32_t qst_type;
-    uint8_t bhbuf[sizeof(dc_qst_hdr)], dhbuf[sizeof(dc_qst_hdr)];
+    uint8_t bhbuf[sizeof(bb_qst_hdr)], dhbuf[sizeof(bb_qst_hdr)];
     dc_qst_hdr *hdr;
+    bb_qst_hdr *bbhdr;
     char *qst_name;
     char *tmp, *bfn, *dfn;
+    size_t hsz = sizeof(dc_qst_hdr);
 
     if(argc != 5 && argc != 7) {
         usage(argv);
@@ -753,6 +965,10 @@ static int bindat_to_qst(int argc, const char *argv[]) {
         qst_type = QUEST_TYPE_DOWNLOAD | QUEST_VER_PC;
     else if(!strcmp(argv[2], "gcdl"))
         qst_type = QUEST_TYPE_DOWNLOAD | QUEST_VER_GC;
+    else if(!strcmp(argv[2], "bb")) {
+        qst_type = QUEST_TYPE_ONLINE | QUEST_VER_BB;
+        hsz = sizeof(bb_qst_hdr);
+    }
     else {
         fprintf(stderr, "Invalid quest type given!\n");
         return -1;
@@ -802,11 +1018,11 @@ static int bindat_to_qst(int argc, const char *argv[]) {
     if(!(tmp = strrchr(qst_name, '.')))
         tmp = qst_name + strlen(qst_name);
 
-	*tmp++ = '.';
-	*tmp++ = 'q';
-	*tmp++ = 's';
-	*tmp++ = 't';
-	*tmp = 0;
+    *tmp++ = '.';
+    *tmp++ = 'q';
+    *tmp++ = 's';
+    *tmp++ = 't';
+    *tmp = 0;
 
     printf("Writing to %s\n", qst_name);
 
@@ -819,48 +1035,107 @@ static int bindat_to_qst(int argc, const char *argv[]) {
     free(qst_name);
 
     /* Write out the headers first. */
-    hdr = (dc_qst_hdr *)bhbuf;
-    if(fseek(bfp, 0, SEEK_END)) {
-        perror("fseek");
-        goto out_qst;
+    if(hsz == sizeof(dc_qst_hdr)) {
+        hdr = (dc_qst_hdr *)bhbuf;
+        if(fseek(bfp, 0, SEEK_END)) {
+            perror("fseek");
+            goto out_qst;
+        }
+
+        /* Update the length in the .bin header, if needed */
+        hdr->length = LE32(((uint32_t)ftell(bfp)));
+
+        if(fseek(bfp, 0, SEEK_SET)) {
+            perror("fseek");
+            goto out_qst;
+        }
+
+        /* Write the .bin header */
+        if(fwrite(bhbuf, 1, sizeof(dc_qst_hdr), qst) != sizeof(dc_qst_hdr)) {
+            perror("Cannot write to output file");
+            goto out_qst;
+        }
+
+        hdr = (dc_qst_hdr *)dhbuf;
+        if(fseek(dfp, 0, SEEK_END)) {
+            perror("fseek");
+            goto out_qst;
+        }
+
+        /* Update the length in the .dat header, if needed */
+        hdr->length = LE32(((uint32_t)ftell(dfp)));
+
+        if(fseek(dfp, 0, SEEK_SET)) {
+            perror("fseek");
+            goto out_qst;
+        }
+
+        /* Write the .dat header */
+        if(fwrite(dhbuf, 1, sizeof(dc_qst_hdr), qst) != sizeof(dc_qst_hdr)) {
+            perror("Cannot write to output file");
+            goto out_qst;
+        }
+
+        if(merge_chunks(qst, bfn, dfn, bfp, dfp, qst_type, NULL, NULL))
+            goto out_qst;
     }
+    else {
+        /* Ugh... Qedit makes everything backwards for bb >_> */
+        bbhdr = (bb_qst_hdr *)dhbuf;
+        if(fseek(dfp, 0, SEEK_END)) {
+            perror("fseek");
+            goto out_qst;
+        }
 
-    /* Update the length in the .bin header, if needed */
-    hdr->length = LE32(((uint32_t)ftell(bfp)));
+        /* Update the length in the .dat header, if needed */
+        bbhdr->length = LE32(((uint32_t)ftell(dfp)));
 
-    if(fseek(bfp, 0, SEEK_SET)) {
-        perror("fseek");
-        goto out_qst;
+        /* Set a name, if one isn't given. */
+        if(bbhdr->name[0] == 0) {
+            strncpy(bbhdr->name, argv[4], 24);
+            bbhdr->name[23] = 0;
+        }
+
+        if(fseek(dfp, 0, SEEK_SET)) {
+            perror("fseek");
+            goto out_qst;
+        }
+
+        /* Write the .dat header */
+        if(fwrite(dhbuf, 1, sizeof(bb_qst_hdr), qst) != sizeof(bb_qst_hdr)) {
+            perror("Cannot write to output file");
+            goto out_qst;
+        }
+
+        bbhdr = (bb_qst_hdr *)bhbuf;
+        if(fseek(bfp, 0, SEEK_END)) {
+            perror("fseek");
+            goto out_qst;
+        }
+
+        /* Update the length in the .bin header, if needed */
+        bbhdr->length = LE32(((uint32_t)ftell(bfp)));
+
+        /* Set a name, if one isn't given. */
+        if(bbhdr->name[0] == 0) {
+            strncpy(bbhdr->name, argv[4], 24);
+            bbhdr->name[23] = 0;
+        }
+
+        if(fseek(bfp, 0, SEEK_SET)) {
+            perror("fseek");
+            goto out_qst;
+        }
+
+        /* Write the .bin header */
+        if(fwrite(bhbuf, 1, sizeof(bb_qst_hdr), qst) != sizeof(bb_qst_hdr)) {
+            perror("Cannot write to output file");
+            goto out_qst;
+        }
+
+        if(merge_chunks2(qst, bfn, dfn, bfp, dfp, qst_type, NULL, NULL))
+            goto out_qst;
     }
-
-    /* Write the .bin header */
-    if(fwrite(bhbuf, 1, sizeof(dc_qst_hdr), qst) != sizeof(dc_qst_hdr)) {
-        perror("Cannot write to output file");
-        goto out_qst;
-    }
-
-    hdr = (dc_qst_hdr *)dhbuf;
-    if(fseek(dfp, 0, SEEK_END)) {
-        perror("fseek");
-        goto out_qst;
-    }
-
-    /* Update the length in the .dat header, if needed */
-    hdr->length = LE32(((uint32_t)ftell(dfp)));
-
-    if(fseek(dfp, 0, SEEK_SET)) {
-        perror("fseek");
-        goto out_qst;
-    }
-
-    /* Write the .dat header */
-    if(fwrite(dhbuf, 1, sizeof(dc_qst_hdr), qst) != sizeof(dc_qst_hdr)) {
-        perror("Cannot write to output file");
-        goto out_qst;
-    }
-
-    if(merge_chunks(qst, bfn, dfn, bfp, dfp, qst_type, NULL, NULL))
-        goto out_qst;
 
     fclose(qst);
     fclose(dfp);
@@ -964,11 +1239,11 @@ static int bindatpvr_to_qst(int argc, const char *argv[]) {
     if(!(tmp = strrchr(qst_name, '.')))
         tmp = qst_name + strlen(qst_name);
 
-	*tmp++ = '.';
-	*tmp++ = 'q';
-	*tmp++ = 's';
-	*tmp++ = 't';
-	*tmp = 0;
+    *tmp++ = '.';
+    *tmp++ = 'q';
+    *tmp++ = 's';
+    *tmp++ = 't';
+    *tmp = 0;
 
     printf("Writing to %s\n", qst_name);
 
