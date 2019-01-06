@@ -250,7 +250,7 @@ pc_gc_common:
             break;
 
         case QUEST_VER_BB:
-            if(buf[0] != QUEST_FILE_TYPE)
+            if(buf[2] != QUEST_FILE_TYPE)
                 return -2;
 
             strncpy(fn, bbhdr->filename, 16);
@@ -402,6 +402,66 @@ static int convert_pc_qst(FILE *qst) {
     return -1;
 }
 
+static int convert_bb_qst(FILE *qst) {
+    FILE *wfp;
+    bb_qst_chunk *chunk = (bb_qst_chunk *)buf;
+    char fn[17];
+    uint32_t clen;
+
+    while(fread(buf, 1, 8, qst) == 8) {
+        /* Check the header */
+        if(chunk->hdr.pkt_type != LE16(QUEST_CHUNK_TYPE) ||
+           chunk->hdr.pkt_len != LE16(0x041C)) {
+            fprintf(stderr, "Unknown or damaged chunk at offset %ld\n",
+                    ftell(qst) - 8);
+            return -1;
+        }
+
+        /* Read the rest of the chunk in */
+        if(fread(buf + 8, 1, 0x0414, qst) != 0x0414) {
+            perror("fread");
+            return -1;
+        }
+
+        /* Grab our vital information and verify it... */
+        strncpy(fn, chunk->filename, 16);
+        fn[16] = 0;
+        clen = LE32(chunk->length);
+
+        if(clen > 1024) {
+            fprintf(stderr, "Unknown or damaged chunk at offset %ld\n",
+                    ftell(qst) - 4);
+            return -1;
+        }
+
+        printf("%s chunk %d (%d bytes)\n", fn, LE32(chunk->hdr.flags),
+               (int)clen);
+
+        /* Open the file we need to write to, and write the chunk to it. */
+        if(!(wfp = fopen(fn, "ab"))) {
+            perror("fopen");
+            return -1;
+        }
+
+        if(fwrite(chunk->data, 1, clen, wfp) != clen) {
+            perror("fwrite");
+            fclose(wfp);
+            return -1;
+        }
+
+        fclose(wfp);
+
+        /* Sigh... */
+        fseek(qst, 4, SEEK_CUR);
+    }
+
+    if(feof(qst))
+        return 0;
+
+    perror("fread");
+    return -1;
+}
+
 static int qst_to_bindat(const char *fn) {
     FILE *fp;
     uint32_t qst_type;
@@ -489,8 +549,7 @@ static int qst_to_bindat(const char *fn) {
             break;
 
         case QUEST_VER_BB:
-            // XXXX
-            rv = -1;
+            rv = convert_bb_qst(fp);
             break;
     }
 
