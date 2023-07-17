@@ -156,20 +156,6 @@ static int copy_chunks(FILE *in, FILE *out, unsigned long qid,
     return 0;
 }
 
-static int copy_data(FILE *in, FILE *out) {
-    uint8_t block[512];
-    size_t len;
-
-    while((len = fread(block, 1, 512, in))) {
-        if(fwrite(block, 1, len, out) != len) {
-            perror("Error copying file data");
-            return -1;
-        }
-    }
-
-    return 0;
-}
-
 int main(int argc, char *argv[]) {
     FILE *in, *out;
     gc_quest_file_pkt gc;
